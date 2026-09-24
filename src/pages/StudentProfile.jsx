@@ -1,5 +1,5 @@
 import { useState } from "react";
-import StudentSidebar from "../components/student/StudentSidebar";
+import StudentSidebar from "../components/Student/StudentSidebar";
 
 const studentProfile = {
   name: "Chukwuemeka Eze",

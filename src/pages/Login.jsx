@@ -1,30 +1,35 @@
 import { Link, useNavigate } from "react-router-dom";
+import { supabase } from "../supabaseClient";
 import logo from "../assets/classpulse-logo.png";
 
 function Login() {
   const navigate = useNavigate();
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
+  const handleSubmit = async (e) => {
+  e.preventDefault();
 
-    const formData = new FormData(e.currentTarget);
+  const formData = new FormData(e.currentTarget);
 
-    const loginData = {
-      email: formData.get("email"),
-      password: formData.get("password"),
-      role: formData.get("role"),
-      rememberMe: formData.get("remember") === "on",
-    };
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: formData.get("email"),
+    password: formData.get("password"),
+  });
 
-    console.log("Login submitted:", loginData);
+  if (error) {
+    alert(error.message);
+    return;
+  }
 
-    // Send the user to the correct dashboard
-    if (loginData.role === "student") {
-      navigate("/studentdashboard");
-    } else if (loginData.role === "lecturer") {
-      alert("Lecturer dashboard is not available yet.");
-    }
-  };
+  const role = data.user.user_metadata.role;
+
+  if (role === "student") {
+    navigate("/student/dashboard");
+  } else if (role === "lecturer") {
+    navigate("/lecturer/dashboard");
+  } else {
+    alert("Your account does not have a valid role.");
+  }
+};
 
   return (
     <main className="min-h-screen bg-background px-6 py-10 font-inter">

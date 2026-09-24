@@ -17,7 +17,7 @@ function StudentProfile() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC]">
+    <div className="min-h-screen bg-background">
       {/* Sidebar */}
       <StudentSidebar
         isOpen={isSidebarOpen}

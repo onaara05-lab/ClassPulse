@@ -37,7 +37,7 @@ function StudentWarnings() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC]">
+    <div className="min-h-screen bg-background">
       {/* Sidebar */}
       <StudentSidebar
         isOpen={isSidebarOpen}
@@ -96,7 +96,9 @@ function StudentWarnings() {
                       {warning.message}
                     </p>
 
-                    <p className={`pt-1 text-xs font-medium ${warning.metaColor}`}>
+                    <p
+                      className={`pt-1 text-xs font-medium ${warning.metaColor}`}
+                    >
                       Issued: {warning.issuedDate} | {warning.actionStatus}
                     </p>
                   </div>

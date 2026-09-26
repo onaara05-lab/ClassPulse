@@ -5,45 +5,45 @@ import {
   LuTriangleAlert,
 } from "react-icons/lu";
 
-const statistics = [
-  {
-    title: "Total Courses",
-    value: "8",
-    description: "Courses assigned to you",
-    icon: LuBookOpen,
-    iconBg: "bg-blue-100",
-    iconColor: "text-blue-600",
-  },
-  {
-    title: "Total Students",
-    value: "245",
-    description: "Students across your courses",
-    icon: LuUsers,
-    iconBg: "bg-purple-100",
-    iconColor: "text-purple-600",
-  },
-  {
-    title: "Attendance Rate",
-    value: "87%",
-    description: "Average attendance rate",
-    icon: LuClipboardCheck,
-    iconBg: "bg-green-100",
-    iconColor: "text-green-600",
-  },
-  {
-    title: "At-Risk Students",
-    value: "18",
-    description: "Students below attendance threshold",
-    icon: LuTriangleAlert,
-    iconBg: "bg-red-100",
-    iconColor: "text-red-600",
-  },
-];
+function StatisticsCards({ stats, loading = false, atRiskCount = 0 }) {
+  const cards = [
+    {
+      title: "Total Courses",
+      value: loading ? "..." : (stats?.totalCourses ?? 0).toString(),
+      description: "Courses assigned to you",
+      icon: LuBookOpen,
+      iconBg: "bg-blue-100",
+      iconColor: "text-blue-600",
+    },
+    {
+      title: "Total Students",
+      value: loading ? "..." : (stats?.totalStudents ?? 0).toString(),
+      description: "Students across your courses",
+      icon: LuUsers,
+      iconBg: "bg-purple-100",
+      iconColor: "text-purple-600",
+    },
+    {
+      title: "Attendance Rate",
+      value: loading ? "..." : `${stats?.overallAttendanceRate ?? 0}%`,
+      description: "Average attendance rate",
+      icon: LuClipboardCheck,
+      iconBg: "bg-green-100",
+      iconColor: "text-green-600",
+    },
+    {
+      title: "At-Risk Students",
+      value: loading ? "..." : atRiskCount.toString(),
+      description: "Students below attendance threshold",
+      icon: LuTriangleAlert,
+      iconBg: "bg-red-100",
+      iconColor: "text-red-600",
+    },
+  ];
 
-function StatisticsCards() {
   return (
     <section className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
-      {statistics.map((statistic) => {
+      {cards.map((statistic) => {
         const Icon = statistic.icon;
 
         return (

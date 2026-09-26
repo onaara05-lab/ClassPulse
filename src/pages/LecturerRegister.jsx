@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { LuEye, LuEyeOff } from "react-icons/lu";
 import logo from "../assets/classpulse-logo.png";
 import { supabase } from "../supabaseClient";
-import { LuEye, LuEyeOff } from "react-icons/lu";
 
 function LecturerRegister() {
   const navigate = useNavigate();
@@ -40,22 +40,20 @@ function LecturerRegister() {
 
     setErrorMessage("");
 
-    // Check if passwords match
+    // Validation checks
     if (formData.password !== formData.confirmPassword) {
       setErrorMessage("Passwords do not match.");
       return;
     }
 
-    // Check password length
     if (formData.password.length < 6) {
       setErrorMessage("Password must be at least 6 characters long.");
       return;
     }
 
-    // Check Supabase connection
     if (!supabase) {
       setErrorMessage(
-        "Supabase client not initialized. Check your .env file and restart the development server."
+        "Supabase client not initialized. Check your environment variables."
       );
       return;
     }
@@ -63,48 +61,57 @@ function LecturerRegister() {
     try {
       setLoading(true);
 
-      // Register lecturer with Supabase Auth
-      const { data, error } = await supabase.auth.signUp({
+      // 1. Sign up user with Supabase Auth including metadata
+      const { data: authData, error: authError } = await supabase.auth.signUp({
         email: formData.email.trim(),
         password: formData.password,
-
-        // Save additional information in Auth metadata
         options: {
           data: {
             full_name: formData.fullName.trim(),
             staff_id: formData.staffId.trim(),
-            faculty: formData.faculty.trim(),
-            department: formData.department.trim(),
-            academic_session: formData.academicSession,
-            semester: formData.semester,
-            courses_taught_count: parseInt(formData.coursesTaughtCount, 10),
             role: "lecturer",
           },
         },
       });
 
-      // Handle Supabase registration errors
-      if (error) {
-        setErrorMessage(error.message);
-        return;
+      if (authError) throw authError;
+
+      const user = authData.user;
+
+      if (user) {
+        // 2. Insert lecturer details into public profiles table
+        const { error: profileError } = await supabase.from("profiles").upsert({
+          id: user.id,
+          full_name: formData.fullName.trim(),
+          staff_id: formData.staffId.trim(),
+          email: formData.email.trim(),
+          faculty: formData.faculty.trim(),
+          department: formData.department.trim(),
+          academic_session: formData.academicSession,
+          semester: formData.semester,
+          courses_taught_count: parseInt(formData.coursesTaughtCount, 10),
+          role: "lecturer",
+          updated_at: new Date().toISOString(),
+        });
+
+        if (profileError) {
+          console.error("Failed to insert profile record:", profileError);
+          throw profileError;
+        }
       }
 
-      console.log("Lecturer registered successfully:", data.user);
-
-      // If Supabase immediately creates a session
-      if (data.session) {
+      // 3. Handle Navigation / Confirmation Flow
+      if (authData.session) {
         alert("Lecturer account created successfully!");
-
         navigate("/lecturer/dashboard");
         return;
       }
 
-      // If email confirmation is required
       alert(
         "Lecturer account created successfully. Please check your email to verify your account, then log in."
       );
 
-      // Clear form
+      // Clear Form State
       setFormData({
         fullName: "",
         staffId: "",
@@ -118,12 +125,10 @@ function LecturerRegister() {
         confirmPassword: "",
       });
 
-      // Redirect to login page
       navigate("/login");
     } catch (error) {
       console.error("Registration error:", error);
-
-      setErrorMessage("Something went wrong. Please try again.");
+      setErrorMessage(error.message || "Something went wrong. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -164,7 +169,6 @@ function LecturerRegister() {
             </label>
 
             <div className="grid grid-cols-2 gap-3">
-              {/* Student Link */}
               <Link
                 to="/register"
                 className="rounded-lg border border-border bg-surface px-4 py-3 text-center text-sm font-semibold text-text-secondary transition hover:border-primary"
@@ -172,7 +176,6 @@ function LecturerRegister() {
                 Student
               </Link>
 
-              {/* Lecturer Button */}
               <button
                 type="button"
                 onClick={() => setRole("lecturer")}
@@ -253,7 +256,6 @@ function LecturerRegister() {
 
             {/* Faculty & Department Row */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              {/* Faculty */}
               <div>
                 <label
                   htmlFor="faculty"
@@ -273,7 +275,6 @@ function LecturerRegister() {
                 />
               </div>
 
-              {/* Department */}
               <div>
                 <label
                   htmlFor="department"
@@ -296,7 +297,6 @@ function LecturerRegister() {
 
             {/* Academic Session & Semester Row */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              {/* Academic Session */}
               <div>
                 <label
                   htmlFor="academicSession"
@@ -318,7 +318,6 @@ function LecturerRegister() {
                 </select>
               </div>
 
-              {/* Semester */}
               <div>
                 <label
                   htmlFor="semester"

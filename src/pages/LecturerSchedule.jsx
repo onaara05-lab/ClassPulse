@@ -1,93 +1,24 @@
-import { useState } from "react";
-import { Plus, X, CalendarDays, Menu } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Plus, X, CalendarDays, Menu, Loader2 } from "lucide-react";
 
 import logo from "../assets/classpulse-logo.png";
 import LecturerSidebar from "../components/lecturer/LecturerSidebar";
+import { supabase } from "../supabaseClient";
 
-const initialSchedule = [
-  {
-    day: "Monday",
-    classes: [
-      {
-        id: 1,
-        course: "CSC 501",
-        time: "10:00 - 11:00 AM",
-        venue: "Hall A",
-        students: 30,
-      },
-    ],
-  },
-  {
-    day: "Tuesday",
-    classes: [
-      {
-        id: 2,
-        course: "CSC 401",
-        time: "8:00 - 9:00 AM",
-        venue: "Lab 1",
-        students: 38,
-      },
-    ],
-  },
-  {
-    day: "Wednesday",
-    classes: [
-      {
-        id: 3,
-        course: "CSC 301",
-        time: "2:00 - 3:00 PM",
-        venue: "Lab 2",
-        students: 45,
-      },
-      {
-        id: 4,
-        course: "CSC 501",
-        time: "4:00 - 5:00 PM",
-        venue: "Hall A",
-        students: 30,
-      },
-    ],
-  },
-  {
-    day: "Thursday",
-    classes: [
-      {
-        id: 5,
-        course: "CSC 301",
-        time: "8:00 - 9:00 AM",
-        venue: "Lab 2",
-        students: 45,
-      },
-      {
-        id: 6,
-        course: "CSC 401",
-        time: "12:00 - 1:00 PM",
-        venue: "Lab 1",
-        students: 38,
-      },
-    ],
-  },
-  {
-    day: "Friday",
-    classes: [
-      {
-        id: 7,
-        course: "CSC 501",
-        time: "11:00 AM - 12:00 PM",
-        venue: "Hall A",
-        students: 30,
-      },
-    ],
-  },
-];
+const DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
 function LecturerSchedule() {
-  const [weeklySchedule, setWeeklySchedule] = useState(initialSchedule);
+  const [weeklySchedule, setWeeklySchedule] = useState(
+    DAYS_OF_WEEK.map((day) => ({ day, classes: [] }))
+  );
+  const [availableCourses, setAvailableCourses] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
 
   const [formData, setFormData] = useState({
-    course: "",
+    courseId: "",
     day: "",
     startTime: "",
     endTime: "",
@@ -97,20 +28,114 @@ function LecturerSchedule() {
 
   const [error, setError] = useState("");
 
+  const fetchScheduleData = async () => {
+    try {
+      setLoading(true);
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        setLoading(false);
+        return;
+      }
+
+      // 1. Fetch lecturer's assigned courses
+      const { data: coursesData, error: coursesError } = await supabase
+        .from("courses")
+        .select("id, code, title")
+        .eq("lecturer_id", user.id);
+
+      if (coursesError) throw coursesError;
+      setAvailableCourses(coursesData || []);
+
+      const courseIds = (coursesData || []).map((c) => c.id);
+
+      if (courseIds.length === 0) {
+        setLoading(false);
+        return;
+      }
+
+      // 2. Fetch schedules for these courses
+      const { data: scheduleData, error: scheduleError } = await supabase
+        .from("schedules")
+        .select(`
+          id,
+          day,
+          start_time,
+          end_time,
+          venue,
+          student_count,
+          courses (id, code)
+        `)
+        .in("course_id", courseIds);
+
+      if (scheduleError) throw scheduleError;
+
+      // Format schedule items for the UI grid
+      const formattedSchedule = DAYS_OF_WEEK.map((day) => {
+        const dayClasses = (scheduleData || [])
+          .filter(
+            (item) => item.day.toLowerCase() === day.toLowerCase()
+          )
+          .map((item) => ({
+            id: item.id,
+            course: item.courses?.code || "N/A",
+            time: `${formatDisplayTime(item.start_time)} - ${formatDisplayTime(
+              item.end_time
+            )}`,
+            venue: item.venue || "TBD",
+            students: item.student_count || 0,
+          }));
+
+        return {
+          day,
+          classes: dayClasses,
+        };
+      });
+
+      setWeeklySchedule(formattedSchedule);
+    } catch (err) {
+      console.error("Error fetching schedule data:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+  const fetchScheduleData = async () => {
+    try {
+      // Your fetching logic here...
+    } catch (err) {
+      console.error("Error fetching schedule data:", err);
+    }
+  };
+
+  fetchScheduleData();
+}, []);
+
+  const formatDisplayTime = (timeStr) => {
+    if (!timeStr) return "";
+    const [hours, minutes] = timeStr.split(":");
+    const hour = Number(hours);
+    const period = hour >= 12 ? "PM" : "AM";
+    const formattedHour = hour % 12 || 12;
+    return `${formattedHour}:${minutes} ${period}`;
+  };
+
   const handleChange = (e) => {
     const { name, value } = e.target;
-
     setFormData((prev) => ({
       ...prev,
       [name]: value,
     }));
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
 
     if (
-      !formData.course ||
+      !formData.courseId ||
       !formData.day ||
       !formData.startTime ||
       !formData.endTime ||
@@ -126,48 +151,43 @@ function LecturerSchedule() {
       return;
     }
 
-    const formatTime = (time) => {
-      const [hours, minutes] = time.split(":");
-      const hour = Number(hours);
+    try {
+      setSubmitting(true);
+      setError("");
 
-      const period = hour >= 12 ? "PM" : "AM";
-      const formattedHour = hour % 12 || 12;
+      const { error: insertError } = await supabase.from("schedules").insert([
+        {
+          course_id: formData.courseId,
+          day: formData.day,
+          start_time: formData.startTime,
+          end_time: formData.endTime,
+          venue: formData.venue,
+          student_count: Number(formData.students),
+        },
+      ]);
 
-      return `${formattedHour}:${minutes} ${period}`;
-    };
+      if (insertError) throw insertError;
 
-    const newClass = {
-      id: Date.now(),
-      course: formData.course,
-      time: `${formatTime(formData.startTime)} - ${formatTime(
-        formData.endTime
-      )}`,
-      venue: formData.venue,
-      students: Number(formData.students),
-    };
+      // Refresh schedule view
+      await fetchScheduleData();
 
-    setWeeklySchedule((prevSchedule) =>
-      prevSchedule.map((day) =>
-        day.day === formData.day
-          ? {
-              ...day,
-              classes: [...day.classes, newClass],
-            }
-          : day
-      )
-    );
+      // Reset Form State
+      setFormData({
+        courseId: "",
+        day: "",
+        startTime: "",
+        endTime: "",
+        venue: "",
+        students: "",
+      });
 
-    setFormData({
-      course: "",
-      day: "",
-      startTime: "",
-      endTime: "",
-      venue: "",
-      students: "",
-    });
-
-    setError("");
-    setIsModalOpen(false);
+      setIsModalOpen(false);
+    } catch (err) {
+      console.error("Error creating schedule:", err);
+      setError(err.message || "Failed to schedule class. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -179,7 +199,7 @@ function LecturerSchedule() {
       />
 
       {/* Main Content Area */}
-      <div className="flex flex-col min-w-0 lg:ml-64 min-h-screen">
+      <div className="flex min-h-screen min-w-0 flex-col lg:ml-64">
         {/* Mobile Header Bar - Logo & Sidebar Trigger */}
         <div className="flex h-16 items-center justify-between border-b border-border bg-surface px-4 lg:hidden">
           <div className="flex items-center gap-3">
@@ -209,7 +229,7 @@ function LecturerSchedule() {
         </div>
 
         {/* Main Content */}
-        <main className="p-4 sm:p-6 lg:p-8 flex-1">
+        <main className="flex-1 p-4 sm:p-6 lg:p-8">
           {/* Page Header */}
           <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <h1 className="text-xl font-bold text-text-primary sm:text-2xl">
@@ -229,51 +249,64 @@ function LecturerSchedule() {
             </button>
           </div>
 
-          {/* Weekly Schedule */}
-          <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {weeklySchedule.map((day) => (
-              <article
-                key={day.day}
-                className="rounded-xl border border-border bg-surface p-3.5 shadow-sm"
-              >
-                {/* Day Header */}
-                <div className="border-b border-border pb-3">
-                  <h2 className="text-sm font-semibold text-text-primary">
-                    {day.day}
-                  </h2>
-                </div>
+          {/* Weekly Schedule Grid */}
+          {loading ? (
+            <div className="flex items-center justify-center py-20 text-text-secondary">
+              <Loader2 size={24} className="mr-2 animate-spin" />
+              <span className="text-sm">Loading schedule...</span>
+            </div>
+          ) : (
+            <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {weeklySchedule.map((day) => (
+                <article
+                  key={day.day}
+                  className="rounded-xl border border-border bg-surface p-3.5 shadow-sm"
+                >
+                  {/* Day Header */}
+                  <div className="border-b border-border pb-3">
+                    <h2 className="text-sm font-semibold text-text-primary">
+                      {day.day}
+                    </h2>
+                  </div>
 
-                {/* Classes */}
-                <div className="mt-3 space-y-2">
-                  {day.classes.map((classItem) => (
-                    <div
-                      key={classItem.id}
-                      className="rounded-lg border border-blue-200 bg-blue-50 p-3"
-                    >
-                      <h3 className="text-sm font-semibold text-blue-700">
-                        {classItem.course}
-                      </h3>
-
-                      <p className="mt-1 text-xs font-medium text-blue-600">
-                        {classItem.time}
+                  {/* Classes List */}
+                  <div className="mt-3 space-y-2">
+                    {day.classes.length === 0 ? (
+                      <p className="py-2 text-xs text-text-secondary">
+                        No classes scheduled
                       </p>
+                    ) : (
+                      day.classes.map((classItem) => (
+                        <div
+                          key={classItem.id}
+                          className="rounded-lg border border-blue-200 bg-blue-50 p-3"
+                        >
+                          <h3 className="text-sm font-semibold text-blue-700">
+                            {classItem.course}
+                          </h3>
 
-                      <p className="mt-1 text-xs text-blue-600">
-                        {classItem.venue} | {classItem.students} students
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </article>
-            ))}
-          </section>
+                          <p className="mt-1 text-xs font-medium text-blue-600">
+                            {classItem.time}
+                          </p>
+
+                          <p className="mt-1 text-xs text-blue-600">
+                            {classItem.venue} | {classItem.students} students
+                          </p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </article>
+              ))}
+            </section>
+          )}
         </main>
       </div>
 
       {/* Schedule Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="max-h-[90vh] scrollbar-none w-full max-w-lg overflow-y-auto rounded-2xl bg-surface p-6 shadow-xl">
+          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-surface p-6 shadow-xl scrollbar-none">
             {/* Modal Header */}
             <div className="mb-6 flex items-center justify-between">
               <div>
@@ -297,26 +330,28 @@ function LecturerSchedule() {
 
             {/* Form */}
             <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Course */}
+              {/* Course Selector */}
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-text-primary">
                   Course
                 </label>
 
                 <select
-                  name="course"
-                  value={formData.course}
+                  name="courseId"
+                  value={formData.courseId}
                   onChange={handleChange}
                   className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
                 >
                   <option value="">Select course</option>
-                  <option value="CSC 301">CSC 301</option>
-                  <option value="CSC 401">CSC 401</option>
-                  <option value="CSC 501">CSC 501</option>
+                  {availableCourses.map((course) => (
+                    <option key={course.id} value={course.id}>
+                      {course.code} - {course.title}
+                    </option>
+                  ))}
                 </select>
               </div>
 
-              {/* Day */}
+              {/* Day Selector */}
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-text-primary">
                   Day
@@ -329,11 +364,11 @@ function LecturerSchedule() {
                   className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
                 >
                   <option value="">Select day</option>
-                  <option value="Monday">Monday</option>
-                  <option value="Tuesday">Tuesday</option>
-                  <option value="Wednesday">Wednesday</option>
-                  <option value="Thursday">Thursday</option>
-                  <option value="Friday">Friday</option>
+                  {DAYS_OF_WEEK.map((day) => (
+                    <option key={day} value={day}>
+                      {day}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -401,14 +436,14 @@ function LecturerSchedule() {
                 />
               </div>
 
-              {/* Error */}
+              {/* Error Message */}
               {error && (
                 <p className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
                   {error}
                 </p>
               )}
 
-              {/* Buttons */}
+              {/* Form Buttons */}
               <div className="flex flex-col-reverse gap-3 pt-2 sm:flex-row sm:justify-end">
                 <button
                   type="button"
@@ -420,10 +455,15 @@ function LecturerSchedule() {
 
                 <button
                   type="submit"
-                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90"
+                  disabled={submitting}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
                 >
-                  <CalendarDays size={18} />
-                  Save Schedule
+                  {submitting ? (
+                    <Loader2 size={18} className="animate-spin" />
+                  ) : (
+                    <CalendarDays size={18} />
+                  )}
+                  {submitting ? "Saving..." : "Save Schedule"}
                 </button>
               </div>
             </form>

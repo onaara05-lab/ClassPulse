@@ -1,22 +1,117 @@
-import { useState } from "react";
-import { User, Menu } from "lucide-react";
+import { useState, useEffect } from "react";
+import { User, Menu, Loader2 } from "lucide-react";
 
 import logo from "../assets/classpulse-logo.png";
 import LecturerSidebar from "../components/lecturer/LecturerSidebar";
+import { supabase } from "../supabaseClient";
 
 function LecturerProfile() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  const profileDetails = {
-    name: "Dr. Akinwumi Damilare",
-    staffId: "AAUA/2018/042",
+  const [profileDetails, setProfileDetails] = useState({
+    name: "",
+    staffId: "N/A",
     role: "Lecturer",
-    email: "D.akinwumi@university.edu",
-    department: "Computer Science",
-    faculty: "computing",
-    coursesTaught: "3 active courses",
+    email: "",
+    department: "N/A",
+    faculty: "N/A",
+    coursesTaught: "0 active courses",
     academicYear: "2025/2026",
+  });
+
+  // Helper to extract initials (e.g., "Dr. John Doe" -> "JD")
+  const getInitials = (name) => {
+    if (!name) return "L";
+    const parts = name.trim().split(" ");
+    if (parts.length >= 2) {
+      return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+    }
+    return name.slice(0, 2).toUpperCase();
   };
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function fetchLecturerProfile() {
+      try {
+        setLoading(true);
+        setError(null);
+
+        // 1. Get authenticated user session
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
+
+        if (userError) throw userError;
+        if (!user) throw new Error("No authenticated user found.");
+
+        // 2. Query lecturer profile details from database
+        const { data: profile, error: profileError } = await supabase
+          .from("profiles")
+          .select("full_name, email, staff_id, department, faculty, academic_session, role")
+          .eq("id", user.id)
+          .single();
+
+        if (profileError && profileError.code !== "PGRST116") {
+          throw profileError;
+        }
+
+        // 3. Count active courses associated with this lecturer
+        const { count: courseCount, error: coursesError } = await supabase
+          .from("courses")
+          .select("id", { count: "exact", head: true })
+          .eq("lecturer_id", user.id);
+
+        if (coursesError) throw coursesError;
+
+        if (isMounted) {
+          const userMetadata = user.user_metadata || {};
+
+          const resolvedName =
+            profile?.full_name ||
+            userMetadata.full_name ||
+            user.email?.split("@")[0] ||
+            "Lecturer";
+
+          const resolvedStaffId =
+            profile?.staff_id ||
+            userMetadata.staff_id ||
+            "N/A";
+
+          const resolvedRole = profile?.role || userMetadata.role || "lecturer";
+
+          setProfileDetails({
+            name: resolvedName,
+            staffId: resolvedStaffId,
+            role: resolvedRole.charAt(0).toUpperCase() + resolvedRole.slice(1),
+            email: profile?.email || user.email || "N/A",
+            department: profile?.department || "N/A",
+            faculty: profile?.faculty || "N/A",
+            coursesTaught: `${courseCount || 0} active ${
+              courseCount === 1 ? "course" : "courses"
+            }`,
+            academicYear: profile?.academic_session || "2025/2026",
+          });
+        }
+      } catch (err) {
+        console.error("Error fetching lecturer profile:", err);
+        if (isMounted) {
+          setError(err.message || "Failed to load profile details.");
+        }
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    }
+
+    fetchLecturerProfile();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-background">
@@ -75,67 +170,79 @@ function LecturerProfile() {
             </div>
           </div>
 
-          {/* Profile Card */}
-          <div className="max-w-2xl rounded-2xl border border-border bg-surface p-6 shadow-sm">
-            {/* User Header Info */}
-            <div className="flex items-center gap-4 pb-6">
-              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-blue-600 text-xl font-bold text-white shadow-sm">
-                DA
+          {/* Loading / Error States */}
+          {loading ? (
+            <div className="flex items-center justify-center py-20 text-text-secondary">
+              <Loader2 className="mr-2 h-6 w-6 animate-spin text-primary" />
+              Loading profile details...
+            </div>
+          ) : error ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-600 max-w-2xl">
+              {error}
+            </div>
+          ) : (
+            /* Profile Card */
+            <div className="max-w-2xl rounded-2xl border border-border bg-surface p-6 shadow-sm">
+              {/* User Header Info */}
+              <div className="flex items-center gap-4 pb-6">
+                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-blue-600 text-xl font-bold text-white shadow-sm">
+                  {getInitials(profileDetails.name)}
+                </div>
+
+                <div>
+                  <h2 className="text-lg font-bold text-text-primary">
+                    {profileDetails.name}
+                  </h2>
+
+                  <p className="text-xs text-text-secondary">
+                    Staff ID: {profileDetails.staffId}
+                  </p>
+
+                  <span className="mt-1.5 inline-block rounded-full bg-blue-50 px-3 py-0.5 text-xs font-semibold text-blue-600">
+                    {profileDetails.role}
+                  </span>
+                </div>
               </div>
 
-              <div>
-                <h2 className="text-lg font-bold text-text-primary">
-                  {profileDetails.name}
-                </h2>
+              {/* Profile Information List */}
+              <div className="divide-y divide-border border-t border-border text-sm">
+                <div className="flex justify-between py-4">
+                  <span className="text-text-secondary">Email</span>
+                  <span className="font-semibold text-text-primary">
+                    {profileDetails.email}
+                  </span>
+                </div>
 
-                <p className="text-xs text-text-secondary">
-                  Staff ID: {profileDetails.staffId}
-                </p>
+                <div className="flex justify-between py-4">
+                  <span className="text-text-secondary">Department</span>
+                  <span className="font-semibold text-text-primary">
+                    {profileDetails.department}
+                  </span>
+                </div>
 
-                <span className="mt-1.5 inline-block rounded-full bg-blue-50 px-3 py-0.5 text-xs font-semibold text-blue-600">
-                  {profileDetails.role}
-                </span>
+                <div className="flex justify-between py-4">
+                  <span className="text-text-secondary">Faculty</span>
+                  <span className="font-semibold text-text-primary">
+                    {profileDetails.faculty}
+                  </span>
+                </div>
+
+                <div className="flex justify-between py-4">
+                  <span className="text-text-secondary">Courses Taught</span>
+                  <span className="font-semibold text-text-primary">
+                    {profileDetails.coursesTaught}
+                  </span>
+                </div>
+
+                <div className="flex justify-between py-4">
+                  <span className="text-text-secondary">Academic Session</span>
+                  <span className="font-semibold text-text-primary">
+                    {profileDetails.academicYear}
+                  </span>
+                </div>
               </div>
             </div>
-
-            {/* Profile Information List */}
-            <div className="divide-y divide-border border-t border-border text-sm">
-              <div className="flex justify-between py-4">
-                <span className="text-text-secondary">Email</span>
-                <span className="font-semibold text-text-primary">
-                  {profileDetails.email}
-                </span>
-              </div>
-
-              <div className="flex justify-between py-4">
-                <span className="text-text-secondary">Department</span>
-                <span className="font-semibold text-text-primary">
-                  {profileDetails.department}
-                </span>
-              </div>
-
-              <div className="flex justify-between py-4">
-                <span className="text-text-secondary">Faculty</span>
-                <span className="font-semibold text-text-primary">
-                  {profileDetails.faculty}
-                </span>
-              </div>
-
-              <div className="flex justify-between py-4">
-                <span className="text-text-secondary">Courses Taught</span>
-                <span className="font-semibold text-text-primary">
-                  {profileDetails.coursesTaught}
-                </span>
-              </div>
-
-              <div className="flex justify-between py-4">
-                <span className="text-text-secondary">Academic Year</span>
-                <span className="font-semibold text-text-primary">
-                  {profileDetails.academicYear}
-                </span>
-              </div>
-            </div>
-          </div>
+          )}
         </main>
       </div>
     </div>

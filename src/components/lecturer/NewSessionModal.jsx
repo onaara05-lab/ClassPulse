@@ -1,12 +1,73 @@
-import { useState } from 'react';
-import { ChevronDown, X } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { ChevronDown, X, Loader2 } from 'lucide-react';
+import { supabase } from '../../supabaseClient';
 
-export default function NewSessionModal({ isOpen, onClose, onSubmit, courses = [] }) {
+export default function NewSessionModal({ isOpen, onClose, onSessionCreated, courses: initialCourses = [] }) {
+  const [courses, setCourses] = useState(initialCourses);
+  const [loadingCourses, setLoadingCourses] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
   const [formData, setFormData] = useState({
     courseId: '',
     sessionType: 'Lecture',
     durationMinutes: '15',
   });
+
+  // Fetch lecturer's courses if not provided via props
+  useEffect(() => {
+    let isMounted = true;
+
+    async function fetchLecturerCourses() {
+      if (!isOpen) return;
+
+      try {
+        setLoadingCourses(true);
+        setError(null);
+
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
+
+        if (userError) throw userError;
+        if (!user) throw new Error("No authenticated user found.");
+
+        const { data, error: fetchError } = await supabase
+          .from("courses")
+          .select("id, course_code, course_name")
+          .eq("lecturer_id", user.id);
+
+        if (fetchError) throw fetchError;
+
+        if (isMounted && data) {
+          const mappedCourses = data.map((c) => ({
+            id: c.id,
+            code: c.course_code,
+            title: c.course_name,
+          }));
+          setCourses(mappedCourses);
+          
+          if (mappedCourses.length > 0) {
+            setFormData((prev) => ({ ...prev, courseId: mappedCourses[0].id }));
+          }
+        }
+      } catch (err) {
+        console.error("Error loading courses:", err);
+        if (isMounted) {
+          setError("Failed to load courses. Please try again.");
+        }
+      } finally {
+        if (isMounted) setLoadingCourses(false);
+      }
+    }
+
+    fetchLecturerCourses();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -15,10 +76,52 @@ export default function NewSessionModal({ isOpen, onClose, onSubmit, courses = [
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (onSubmit) {
-      onSubmit(formData);
+    if (!formData.courseId) {
+      setError("Please select a course.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setError(null);
+
+      // Calculate session window expiration time
+      const startTime = new Date();
+      const expiresAt = new Date(
+        startTime.getTime() + parseInt(formData.durationMinutes, 10) * 60000
+      );
+
+      // Insert new session into Supabase
+      const { data, error: insertError } = await supabase
+        .from("class_sessions")
+        .insert([
+          {
+            course_id: formData.courseId,
+            session_type: formData.sessionType,
+            session_date: startTime.toISOString().split("T")[0],
+            created_at: startTime.toISOString(),
+            expires_at: expiresAt.toISOString(),
+            is_active: true,
+          },
+        ])
+        .select("*")
+        .single();
+
+      if (insertError) throw insertError;
+
+      // Trigger callback if provided
+      if (onSessionCreated) {
+        onSessionCreated(data);
+      }
+
+      onClose();
+    } catch (err) {
+      console.error("Error creating session:", err);
+      setError(err.message || "Failed to create attendance session.");
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -29,7 +132,8 @@ export default function NewSessionModal({ isOpen, onClose, onSubmit, courses = [
         {/* Close Button */}
         <button
           onClick={onClose}
-          className="absolute top-5 right-5 text-gray-400 hover:text-gray-600 transition-colors"
+          disabled={submitting}
+          className="absolute top-5 right-5 text-gray-400 hover:text-gray-600 transition-colors disabled:opacity-50"
           type="button"
         >
           <X className="w-5 h-5" />
@@ -45,6 +149,12 @@ export default function NewSessionModal({ isOpen, onClose, onSubmit, courses = [
           </p>
         </div>
 
+        {error && (
+          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-600">
+            {error}
+          </div>
+        )}
+
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="space-y-5">
           {/* Course Selection */}
@@ -58,24 +168,17 @@ export default function NewSessionModal({ isOpen, onClose, onSubmit, courses = [
                 value={formData.courseId}
                 onChange={handleChange}
                 required
-                className="w-full appearance-none bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-700 font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all pr-10"
+                disabled={loadingCourses || submitting}
+                className="w-full appearance-none bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-700 font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all pr-10 disabled:bg-slate-100"
               >
                 <option value="" disabled>
-                  Select course...
+                  {loadingCourses ? "Loading courses..." : "Select course..."}
                 </option>
-                {courses.length > 0 ? (
-                  courses.map((course) => (
-                    <option key={course.id} value={course.id}>
-                      {course.code} - {course.title}
-                    </option>
-                  ))
-                ) : (
-                  <>
-                    <option value="csc301">CSC 301 - Data Structures</option>
-                    <option value="csc401">CSC 401 - Software Engineering</option>
-                    <option value="csc501">CSC 501 - Machine Learning</option>
-                  </>
-                )}
+                {courses.map((course) => (
+                  <option key={course.id} value={course.id}>
+                    {course.code} - {course.title}
+                  </option>
+                ))}
               </select>
               <ChevronDown className="w-5 h-5 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
             </div>
@@ -91,7 +194,8 @@ export default function NewSessionModal({ isOpen, onClose, onSubmit, courses = [
                 name="sessionType"
                 value={formData.sessionType}
                 onChange={handleChange}
-                className="w-full appearance-none bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-700 font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all pr-10"
+                disabled={submitting}
+                className="w-full appearance-none bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-700 font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all pr-10 disabled:bg-slate-100"
               >
                 <option value="Lecture">Lecture</option>
                 <option value="Practical / Lab">Practical / Lab</option>
@@ -111,7 +215,8 @@ export default function NewSessionModal({ isOpen, onClose, onSubmit, courses = [
                 name="durationMinutes"
                 value={formData.durationMinutes}
                 onChange={handleChange}
-                className="w-full appearance-none bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-700 font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all pr-10"
+                disabled={submitting}
+                className="w-full appearance-none bg-white border border-slate-200 rounded-xl px-4 py-3 text-slate-700 font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all pr-10 disabled:bg-slate-100"
               >
                 <option value="5">5 minutes</option>
                 <option value="10">10 minutes</option>
@@ -127,15 +232,24 @@ export default function NewSessionModal({ isOpen, onClose, onSubmit, courses = [
             <button
               type="button"
               onClick={onClose}
-              className="w-1/2 py-3 px-4 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50 transition-colors text-center"
+              disabled={submitting}
+              className="w-1/2 py-3 px-4 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50 transition-colors text-center disabled:opacity-50"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="w-1/2 py-3 px-4 rounded-xl bg-blue-500 hover:bg-blue-600 text-white font-semibold shadow-sm transition-colors text-center"
+              disabled={submitting || loadingCourses}
+              className="w-1/2 py-3 px-4 rounded-xl bg-blue-500 hover:bg-blue-600 text-white font-semibold shadow-sm transition-colors text-center flex items-center justify-center disabled:opacity-50"
             >
-              Open Session
+              {submitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                "Open Session"
+              )}
             </button>
           </div>
         </form>

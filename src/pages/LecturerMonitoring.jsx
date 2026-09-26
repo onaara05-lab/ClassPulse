@@ -1,41 +1,164 @@
-import { useState } from "react";
-import { Menu } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Menu, Loader2 } from "lucide-react";
 
 import logo from "../assets/classpulse-logo.png";
 import LecturerSidebar from "../components/lecturer/LecturerSidebar";
-
-const monitoringData = [
-  {
-    id: 1,
-    code: "CSC 301",
-    title: "Data Structures and Algorithms",
-    attendance: 81,
-    students: 45,
-    sessions: 26,
-    atRisk: 2,
-  },
-  {
-    id: 2,
-    code: "CSC 401",
-    title: "Operating Systems",
-    attendance: 74,
-    students: 38,
-    sessions: 24,
-    atRisk: 2,
-  },
-  {
-    id: 3,
-    code: "CSC 501",
-    title: "Machine Learning Fundamentals",
-    attendance: 88,
-    students: 30,
-    sessions: 20,
-    atRisk: 1,
-  },
-];
+import { supabase } from "../supabaseClient";
 
 function LecturerMonitoring() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [monitoringData, setMonitoringData] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function fetchMonitoringData() {
+      try {
+        setLoading(true);
+        setError(null);
+
+        // 1. Fetch current logged-in lecturer
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
+
+        if (userError) throw userError;
+        if (!user) throw new Error("No authenticated user found.");
+
+        // 2. Get courses assigned to the lecturer
+        const { data: rawCourses, error: coursesError } = await supabase
+          .from("courses")
+          .select("id, course_code, course_name")
+          .eq("lecturer_id", user.id);
+
+        if (coursesError) throw coursesError;
+
+        if (!rawCourses || rawCourses.length === 0) {
+          if (isMounted) {
+            setMonitoringData([]);
+            setLoading(false);
+          }
+          return;
+        }
+
+        const courseIds = rawCourses.map((c) => c.id);
+
+        // 3. Fetch enrollments for these courses
+        const { data: enrollments, error: enrollmentsError } = await supabase
+          .from("enrollments")
+          .select("course_id, student_id")
+          .in("course_id", courseIds);
+
+        if (enrollmentsError) throw enrollmentsError;
+
+        // Group enrolled students by course
+        const studentsByCourse = {};
+        enrollments?.forEach((e) => {
+          if (!studentsByCourse[e.course_id]) {
+            studentsByCourse[e.course_id] = new Set();
+          }
+          studentsByCourse[e.course_id].add(e.student_id);
+        });
+
+        // 4. Fetch class sessions held per course
+        const { data: sessions, error: sessionsError } = await supabase
+          .from("class_sessions")
+          .select("id, course_id")
+          .in("course_id", courseIds);
+
+        if (sessionsError) throw sessionsError;
+
+        const sessionsByCourse = {};
+        const sessionToCourseMap = {};
+        sessions?.forEach((s) => {
+          sessionsByCourse[s.course_id] = (sessionsByCourse[s.course_id] || 0) + 1;
+          sessionToCourseMap[s.id] = s.course_id;
+        });
+
+        const sessionIds = sessions?.map((s) => s.id) || [];
+
+        // 5. Fetch present records across sessions
+        let attendanceMap = {}; // Key: "studentId_courseId" -> count present
+        let totalPresentByCourse = {}; // Key: courseId -> count total present
+
+        if (sessionIds.length > 0) {
+          const { data: records, error: recordsError } = await supabase
+            .from("attendance_records")
+            .select("class_session_id, student_id")
+            .in("class_session_id", sessionIds)
+            .eq("status", "present");
+
+          if (recordsError) throw recordsError;
+
+          records?.forEach((r) => {
+            const courseId = sessionToCourseMap[r.class_session_id];
+            const key = `${r.student_id}_${courseId}`;
+            attendanceMap[key] = (attendanceMap[key] || 0) + 1;
+            totalPresentByCourse[courseId] = (totalPresentByCourse[courseId] || 0) + 1;
+          });
+        }
+
+        // 6. Calculate stats for each course
+        const computedData = rawCourses.map((course) => {
+          const courseId = course.id;
+          const enrolledStudentsSet = studentsByCourse[courseId] || new Set();
+          const totalStudents = enrolledStudentsSet.size;
+          const totalSessions = sessionsByCourse[courseId] || 0;
+
+          // Course Average Attendance Calculation
+          const possibleTotal = totalStudents * totalSessions;
+          const actualPresentTotal = totalPresentByCourse[courseId] || 0;
+          const avgAttendance =
+            possibleTotal > 0
+              ? Math.round((actualPresentTotal / possibleTotal) * 100)
+              : 0;
+
+          // At Risk Calculation (< 75% attendance)
+          let atRiskCount = 0;
+          if (totalSessions > 0) {
+            enrolledStudentsSet.forEach((studentId) => {
+              const key = `${studentId}_${courseId}`;
+              const studentPresentCount = attendanceMap[key] || 0;
+              const studentPercentage = (studentPresentCount / totalSessions) * 100;
+              if (studentPercentage < 75) {
+                atRiskCount += 1;
+              }
+            });
+          }
+
+          return {
+            id: courseId,
+            code: course.course_code,
+            title: course.course_name,
+            attendance: avgAttendance,
+            students: totalStudents,
+            sessions: totalSessions,
+            atRisk: atRiskCount,
+          };
+        });
+
+        if (isMounted) {
+          setMonitoringData(computedData);
+        }
+      } catch (err) {
+        console.error("Error loading monitoring data:", err);
+        if (isMounted) {
+          setError(err.message || "Failed to load monitoring metrics.");
+        }
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    }
+
+    fetchMonitoringData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-background">
@@ -79,7 +202,6 @@ function LecturerMonitoring() {
         <main className="p-4 sm:p-6 lg:p-8 flex-1">
           {/* Page Header */}
           <div className="mb-6 flex items-center gap-3">
-
             <div>
               <h1 className="text-xl font-bold text-text-primary sm:text-2xl">
                 Attendance Monitoring
@@ -91,91 +213,110 @@ function LecturerMonitoring() {
             </div>
           </div>
 
-          {/* Monitoring Cards Grid */}
-          <section className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
-            {monitoringData.map((course) => {
-              const attendanceIsLow = course.attendance < 80;
+          {/* Loading State */}
+          {loading ? (
+            <div className="flex items-center justify-center py-20 text-text-secondary">
+              <Loader2 className="mr-2 h-6 w-6 animate-spin text-primary" />
+              Loading monitoring metrics...
+            </div>
+          ) : error ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-600">
+              {error}
+            </div>
+          ) : monitoringData.length === 0 ? (
+            <div className="rounded-2xl border border-border bg-surface p-12 text-center text-text-secondary">
+              <p className="text-base font-semibold text-text-primary">No active courses found</p>
+              <p className="mt-1 text-sm">
+                Courses assigned to you will appear here with live attendance analytics.
+              </p>
+            </div>
+          ) : (
+            /* Monitoring Cards Grid */
+            <section className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+              {monitoringData.map((course) => {
+                const attendanceIsLow = course.attendance < 80;
 
-              return (
-                <article
-                  key={course.id}
-                  className="rounded-2xl border border-border bg-surface p-5 shadow-sm transition hover:shadow-md"
-                >
-                  {/* Card Header */}
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <h2 className="text-base font-bold text-text-primary sm:text-lg">
-                        {course.code}
-                      </h2>
+                return (
+                  <article
+                    key={course.id}
+                    className="rounded-2xl border border-border bg-surface p-5 shadow-sm transition hover:shadow-md"
+                  >
+                    {/* Card Header */}
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h2 className="text-base font-bold text-text-primary sm:text-lg">
+                          {course.code}
+                        </h2>
 
-                      <p className="mt-1 text-xs text-text-secondary sm:text-sm">
-                        {course.title}
-                      </p>
-                    </div>
+                        <p className="mt-1 text-xs text-text-secondary sm:text-sm">
+                          {course.title}
+                        </p>
+                      </div>
 
-                    <span
-                      className={`whitespace-nowrap rounded-full px-3 py-1 text-xs font-semibold ${
-                        attendanceIsLow
-                          ? "bg-amber-100 text-amber-700"
-                          : "bg-emerald-100 text-emerald-700"
-                      }`}
-                    >
-                      {course.attendance}% avg
-                    </span>
-                  </div>
-
-                  {/* Attendance Progress Bar */}
-                  <div className="mt-5">
-                    <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
-                      <div
-                        className={`h-full rounded-full ${
+                      <span
+                        className={`whitespace-nowrap rounded-full px-3 py-1 text-xs font-semibold ${
                           attendanceIsLow
-                            ? "bg-amber-500"
-                            : "bg-emerald-500"
+                            ? "bg-amber-100 text-amber-700"
+                            : "bg-emerald-100 text-emerald-700"
                         }`}
-                        style={{
-                          width: `${course.attendance}%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Metrics Section */}
-                  <div className="mt-6 grid grid-cols-3 gap-2">
-                    {/* Students */}
-                    <div className="rounded-xl bg-background/60 p-3 text-center">
-                      <p className="text-base font-bold text-text-primary sm:text-lg">
-                        {course.students}
-                      </p>
-                      <p className="mt-0.5 text-xs text-text-secondary">
-                        Students
-                      </p>
+                      >
+                        {course.attendance}% avg
+                      </span>
                     </div>
 
-                    {/* Sessions */}
-                    <div className="rounded-xl bg-background/60 p-3 text-center">
-                      <p className="text-base font-bold text-text-primary sm:text-lg">
-                        {course.sessions}
-                      </p>
-                      <p className="mt-0.5 text-xs text-text-secondary">
-                        Sessions
-                      </p>
+                    {/* Attendance Progress Bar */}
+                    <div className="mt-5">
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
+                        <div
+                          className={`h-full rounded-full ${
+                            attendanceIsLow
+                              ? "bg-amber-500"
+                              : "bg-emerald-500"
+                          }`}
+                          style={{
+                            width: `${course.attendance}%`,
+                          }}
+                        />
+                      </div>
                     </div>
 
-                    {/* At Risk */}
-                    <div className="rounded-xl bg-red-50 p-3 text-center">
-                      <p className="text-base font-bold text-red-600 sm:text-lg">
-                        {course.atRisk}
-                      </p>
-                      <p className="mt-0.5 text-xs font-medium text-red-600">
-                        At Risk
-                      </p>
+                    {/* Metrics Section */}
+                    <div className="mt-6 grid grid-cols-3 gap-2">
+                      {/* Students */}
+                      <div className="rounded-xl bg-background/60 p-3 text-center">
+                        <p className="text-base font-bold text-text-primary sm:text-lg">
+                          {course.students}
+                        </p>
+                        <p className="mt-0.5 text-xs text-text-secondary">
+                          Students
+                        </p>
+                      </div>
+
+                      {/* Sessions */}
+                      <div className="rounded-xl bg-background/60 p-3 text-center">
+                        <p className="text-base font-bold text-text-primary sm:text-lg">
+                          {course.sessions}
+                        </p>
+                        <p className="mt-0.5 text-xs text-text-secondary">
+                          Sessions
+                        </p>
+                      </div>
+
+                      {/* At Risk */}
+                      <div className="rounded-xl bg-red-50 p-3 text-center">
+                        <p className="text-base font-bold text-red-600 sm:text-lg">
+                          {course.atRisk}
+                        </p>
+                        <p className="mt-0.5 text-xs font-medium text-red-600">
+                          At Risk
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                </article>
-              );
-            })}
-          </section>
+                  </article>
+                );
+              })}
+            </section>
+          )}
         </main>
       </div>
     </div>

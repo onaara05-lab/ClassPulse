@@ -35,61 +35,69 @@ function LecturerRiskMonitor() {
         // 1. Fetch courses assigned to this lecturer
         const { data: courses, error: coursesError } = await supabase
           .from("courses")
-          .select("id, code")
+          .select("id, course_code")
           .eq("lecturer_id", user.id);
 
-        if (coursesError || !courses || courses.length === 0) {
+        if (coursesError) throw coursesError;
+        if (!courses || courses.length === 0) {
           if (isMounted) setLoading(false);
           return;
         }
 
         const courseIds = courses.map((c) => c.id);
 
-        // 2. Fetch all attendance records for these courses
-        const { data: records, error: recordsError } = await supabase
-          .from("attendance_records")
-          .select(`
-            id,
-            status,
-            course_id,
-            courses (code),
-            student_id,
-            profiles:student_id (full_name, staff_id)
-          `)
+        const { data: enrollments, error: enrollmentsError } = await supabase
+          .from("enrollments")
+          .select(`course_id, student_id, students:student_id(full_name, matric_number)`)
           .in("course_id", courseIds);
+        if (enrollmentsError) throw enrollmentsError;
 
+        const { data: sessions, error: sessionsError } = await supabase
+          .from("class_sessions")
+          .select("id, course_id")
+          .in("course_id", courseIds);
+        if (sessionsError) throw sessionsError;
+
+        const sessionIds = (sessions || []).map((session) => session.id);
+        const { data: records, error: recordsError } = sessionIds.length
+          ? await supabase
+              .from("attendance_records")
+              .select("student_id, class_session_id, status")
+              .in("class_session_id", sessionIds)
+          : { data: [], error: null };
         if (recordsError) throw recordsError;
 
-        // 3. Process records to calculate attendance rate per student per course
-        const studentStatsMap = {};
-
-        (records || []).forEach((record) => {
-          const key = `${record.student_id}-${record.course_id}`;
-          if (!studentStatsMap[key]) {
-            studentStatsMap[key] = {
-              id: key,
-              studentId: record.student_id,
-              name: record.profiles?.full_name || "Unknown Student",
-              matricNo: record.profiles?.staff_id || "N/A",
-              course: record.courses?.code || "N/A",
-              totalSessions: 0,
-              attendedSessions: 0,
-            };
-          }
-
-          studentStatsMap[key].totalSessions += 1;
-          if (record.status === "present" || record.status === "late") {
-            studentStatsMap[key].attendedSessions += 1;
-          }
+        const courseCodeById = new Map(
+          courses.map((course) => [course.id, course.course_code]),
+        );
+        const sessionsByCourse = new Map();
+        const courseBySessionId = new Map();
+        (sessions || []).forEach((session) => {
+          sessionsByCourse.set(
+            session.course_id,
+            (sessionsByCourse.get(session.course_id) || 0) + 1,
+          );
+          courseBySessionId.set(session.id, session.course_id);
         });
 
-        // 4. Calculate attendance percentages and categorize
+        const presentByStudentCourse = new Map();
+        (records || []).forEach((record) => {
+          if (record.status !== "present" && record.status !== "late") return;
+          const courseId = courseBySessionId.get(record.class_session_id);
+          const key = `${record.student_id}-${courseId}`;
+          presentByStudentCourse.set(key, (presentByStudentCourse.get(key) || 0) + 1);
+        });
+
+        // Calculate each enrolled student's attendance against all sessions.
         const compiledStudents = [];
         let counts = { atRisk: 0, warning: 0, healthy: 0 };
 
-        Object.values(studentStatsMap).forEach((stat) => {
-          const percentage = stat.totalSessions > 0 
-            ? Math.round((stat.attendedSessions / stat.totalSessions) * 100)
+        (enrollments || []).forEach((enrollment) => {
+          const totalSessions = sessionsByCourse.get(enrollment.course_id) || 0;
+          const key = `${enrollment.student_id}-${enrollment.course_id}`;
+          const attendedSessions = presentByStudentCourse.get(key) || 0;
+          const percentage = totalSessions > 0
+            ? Math.round((attendedSessions / totalSessions) * 100)
             : 0;
 
           if (percentage < 60) counts.atRisk += 1;
@@ -97,7 +105,13 @@ function LecturerRiskMonitor() {
           else counts.healthy += 1;
 
           compiledStudents.push({
-            ...stat,
+            id: key,
+            studentId: enrollment.student_id,
+            name: enrollment.students?.full_name || "Unknown Student",
+            matricNo: enrollment.students?.matric_number || "N/A",
+            course: courseCodeById.get(enrollment.course_id) || "N/A",
+            totalSessions,
+            attendedSessions,
             attendance: percentage,
           });
         });
@@ -120,14 +134,14 @@ function LecturerRiskMonitor() {
     };
   }, []);
 
-  const handleSendAlert = async (studentId, name, course) => {
+  const handleSendAlert = async (studentId, name, course, alertKey = studentId) => {
     try {
-      setAlertSent((prev) => ({ ...prev, [studentId]: true }));
+      setAlertSent((prev) => ({ ...prev, [alertKey]: true }));
 
       // Optional: Log alert event in Supabase alerts table if present
       await supabase.from("notifications").insert([
         {
-          user_id: studentId.split("-")[0],
+          user_id: studentId,
           title: "Attendance Warning",
           message: `Your attendance in ${course} is below threshold. Please review your attendance record.`,
           created_at: new Date().toISOString(),
@@ -343,9 +357,10 @@ function LecturerRiskMonitor() {
                               disabled={alertSent[student.id]}
                               onClick={() =>
                                 handleSendAlert(
-                                  student.id,
+                                  student.studentId,
                                   student.name,
-                                  student.course
+                                  student.course,
+                                  student.id,
                                 )
                               }
                               className={`inline-flex items-center gap-1.5 text-xs font-semibold transition ${

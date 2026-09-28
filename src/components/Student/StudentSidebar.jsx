@@ -18,7 +18,7 @@ function StudentSidebar({ isOpen, onClose }) {
   const navigationLinks = [
     {
       name: "Dashboard",
-      path: "/student/dashboard",
+      path: "/student-dashboard",
       icon: LuLayoutDashboard,
     },
     {

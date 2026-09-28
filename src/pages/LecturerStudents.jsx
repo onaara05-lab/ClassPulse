@@ -31,7 +31,7 @@ function LecturerStudents() {
         // 2. Fetch courses taught by this lecturer
         const { data: coursesData, error: coursesError } = await supabase
           .from("courses")
-          .select("id, code")
+          .select("id, course_code")
           .eq("lecturer_id", user.id);
 
         if (coursesError) throw coursesError;
@@ -47,7 +47,7 @@ function LecturerStudents() {
         // Create a lookup map for course codes
         const courseMap = {};
         (coursesData || []).forEach((c) => {
-          courseMap[c.id] = c.code;
+          courseMap[c.id] = c.course_code;
         });
 
         // 3. Fetch enrollments for these courses including student profiles
@@ -56,9 +56,8 @@ function LecturerStudents() {
           .select(`
             id,
             course_id,
-            attendance_percentage,
-            status,
-            students (
+            student_id,
+            students:student_id (
               id,
               full_name,
               matric_number
@@ -68,7 +67,44 @@ function LecturerStudents() {
 
         if (enrollmentsError) throw enrollmentsError;
 
-        // 4. Transform raw database records into UI-friendly structure
+        const { data: sessions, error: sessionsError } = await supabase
+          .from("class_sessions")
+          .select("id, course_id")
+          .in("course_id", courseIds);
+
+        if (sessionsError) throw sessionsError;
+
+        const sessionToCourse = new Map(
+          (sessions || []).map((session) => [session.id, session.course_id]),
+        );
+        const sessionIds = [...sessionToCourse.keys()];
+        const { data: attendanceRecords, error: attendanceError } =
+          sessionIds.length > 0
+            ? await supabase
+                .from("attendance_records")
+                .select("student_id, class_session_id, status")
+                .in("class_session_id", sessionIds)
+                .eq("status", "present")
+            : { data: [], error: null };
+
+        if (attendanceError) throw attendanceError;
+
+        const sessionsByCourse = new Map();
+        (sessions || []).forEach(({ course_id }) => {
+          sessionsByCourse.set(
+            course_id,
+            (sessionsByCourse.get(course_id) || 0) + 1,
+          );
+        });
+
+        const presentByStudentCourse = new Map();
+        (attendanceRecords || []).forEach((record) => {
+          const courseId = sessionToCourse.get(record.class_session_id);
+          const key = `${record.student_id}:${courseId}`;
+          presentByStudentCourse.set(key, (presentByStudentCourse.get(key) || 0) + 1);
+        });
+
+        // Compute attendance from the same session records students mark.
         const formattedStudents = (enrollmentsData || []).map((e) => {
           const studentName = e.students?.full_name || "Unknown Student";
           const initials = studentName
@@ -78,15 +114,19 @@ function LecturerStudents() {
             .substring(0, 2)
             .toUpperCase();
 
-          const attendance = e.attendance_percentage ?? 0;
+          const totalSessions = sessionsByCourse.get(e.course_id) || 0;
+          const presentCount =
+            presentByStudentCourse.get(`${e.student_id}:${e.course_id}`) || 0;
+          const attendance = totalSessions
+            ? Math.round((presentCount / totalSessions) * 100)
+            : 0;
 
-          // Auto-calculate risk status based on attendance if not directly set
-          let status = e.status;
-          if (!status) {
-            if (attendance >= 80) status = "Healthy";
-            else if (attendance >= 60) status = "Warning";
-            else status = "At Risk";
-          }
+          const status =
+            attendance >= 80
+              ? "Healthy"
+              : attendance >= 60
+                ? "Warning"
+                : "At Risk";
 
           return {
             id: e.id,

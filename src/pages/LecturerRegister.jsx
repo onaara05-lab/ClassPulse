@@ -37,10 +37,8 @@ function LecturerRegister() {
 
   const handleSubmit = async (event) => {
     event.preventDefault();
-
     setErrorMessage("");
 
-    // Validation checks
     if (formData.password !== formData.confirmPassword) {
       setErrorMessage("Passwords do not match.");
       return;
@@ -51,84 +49,56 @@ function LecturerRegister() {
       return;
     }
 
-    if (!supabase) {
-      setErrorMessage(
-        "Supabase client not initialized. Check your environment variables."
-      );
-      return;
-    }
-
     try {
       setLoading(true);
 
-      // 1. Sign up user with Supabase Auth including metadata
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: formData.email.trim(),
-        password: formData.password,
-        options: {
-          data: {
-            full_name: formData.fullName.trim(),
-            staff_id: formData.staffId.trim(),
-            role: "lecturer",
-          },
-        },
-      });
-
-      if (authError) throw authError;
-
-      const user = authData.user;
-
-      if (user) {
-        // 2. Insert lecturer details into public profiles table
-        const { error: profileError } = await supabase.from("profiles").upsert({
-          id: user.id,
+      // Sign up user with metadata (The Database trigger handles profiles table insert)
+      // Sign up user with metadata (The Database trigger handles profiles table insert)
+    const { data: authData, error: authError } = await supabase.auth.signUp({
+      email: formData.email.trim(),
+      password: formData.password,
+      options: {
+        data: {
           full_name: formData.fullName.trim(),
           staff_id: formData.staffId.trim(),
-          email: formData.email.trim(),
           faculty: formData.faculty.trim(),
           department: formData.department.trim(),
           academic_session: formData.academicSession,
           semester: formData.semester,
-          courses_taught_count: parseInt(formData.coursesTaughtCount, 10),
+          courses_taught_count: formData.coursesTaughtCount,
           role: "lecturer",
-          updated_at: new Date().toISOString(),
-        });
+        },
+      },
+    });
 
-        if (profileError) {
-          console.error("Failed to insert profile record:", profileError);
-          throw profileError;
-        }
-      }
+    if (authError) throw authError;
 
-      // 3. Handle Navigation / Confirmation Flow
-      if (authData.session) {
-        alert("Lecturer account created successfully!");
-        navigate("/lecturer/dashboard");
-        return;
-      }
+    // Check if session exists or email confirmation is required
+    if (authData?.session) {
+      alert("Lecturer account created successfully!");
+    } else {
+      alert("Registration successful! Please check your email to confirm your account.");
+    }
 
-      alert(
-        "Lecturer account created successfully. Please check your email to verify your account, then log in."
-      );
+    setFormData({
+      fullName: "",
+      staffId: "",
+      email: "",
+      faculty: "",
+      department: "",
+      academicSession: "2025/2026",
+      semester: "First Semester",
+      coursesTaughtCount: "1",
+      password: "",
+      confirmPassword: "",
+    });
 
-      // Clear Form State
-      setFormData({
-        fullName: "",
-        staffId: "",
-        email: "",
-        faculty: "",
-        department: "",
-        academicSession: "2025/2026",
-        semester: "First Semester",
-        coursesTaughtCount: "1",
-        password: "",
-        confirmPassword: "",
-      });
-
-      navigate("/login");
+    navigate("/login");
     } catch (error) {
       console.error("Registration error:", error);
-      setErrorMessage(error.message || "Something went wrong. Please try again.");
+      setErrorMessage(
+        error.message || "Something went wrong. Please try again.",
+      );
     } finally {
       setLoading(false);
     }

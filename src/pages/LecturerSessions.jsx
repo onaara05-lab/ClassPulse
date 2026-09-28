@@ -48,9 +48,10 @@ function LecturerSessions() {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    let initialLoad = true;
     const fetchInitialData = async () => {
       try {
-        setLoading(true);
+        if (initialLoad) setLoading(true);
 
         const {
           data: { user },
@@ -64,13 +65,18 @@ function LecturerSessions() {
         // 1. Fetch lecturer's courses
         const { data: coursesData, error: coursesError } = await supabase
           .from("courses")
-          .select("id, code, title")
+          .select("id, course_code, course_name")
           .eq("lecturer_id", user.id);
 
         if (coursesError) throw coursesError;
-        setCourses(coursesData || []);
+        const lecturerCourses = coursesData || [];
+        setCourses(lecturerCourses.map((course) => ({
+          id: course.id,
+          code: course.course_code,
+          title: course.course_name,
+        })));
 
-        const courseIds = (coursesData || []).map((c) => c.id);
+        const courseIds = lecturerCourses.map((course) => course.id);
 
         if (courseIds.length === 0) {
           setSessions([]);
@@ -80,46 +86,84 @@ function LecturerSessions() {
 
         // 2. Fetch sessions corresponding to lecturer's courses
         const { data: sessionsData, error: sessionsError } = await supabase
-          .from("sessions")
+          .from("class_sessions")
           .select(`
             id,
-            type,
             session_date,
             start_time,
-            present_count,
-            total_students,
-            window_minutes,
-            status,
+            end_time,
+            session_type,
+            attendance_open,
             created_at,
-            courses (id, code)
+            courses (id, course_code)
           `)
           .in("course_id", courseIds)
           .order("created_at", { ascending: false });
 
         if (sessionsError) throw sessionsError;
 
+        const sessionIds = (sessionsData || []).map((session) => session.id);
+        const { data: enrollments, error: enrollmentsError } =
+          await supabase
+            .from("enrollments")
+            .select("course_id, student_id")
+            .in("course_id", courseIds);
+        if (enrollmentsError) throw enrollmentsError;
+
+        const { data: attendanceRecords, error: attendanceError } =
+          sessionIds.length > 0
+            ? await supabase
+                .from("attendance_records")
+                .select("class_session_id, status")
+                .in("class_session_id", sessionIds)
+            : { data: [], error: null };
+        if (attendanceError) throw attendanceError;
+
+        const studentCountByCourse = new Map();
+        (enrollments || []).forEach(({ course_id }) => {
+          studentCountByCourse.set(
+            course_id,
+            (studentCountByCourse.get(course_id) || 0) + 1,
+          );
+        });
+
         // Map sessions database record to UI presentation format
         const formattedSessions = (sessionsData || []).map((s) => ({
           id: s.id,
-          course: s.courses?.code || "N/A",
-          type: s.type || "Lecture",
+          course: s.courses?.course_code || "N/A",
+          type: s.session_type || "Lecture",
           date: formatDate(s.session_date),
           time: formatTime(s.start_time),
-          present: s.present_count || 0,
-          total: s.total_students || 0,
-          window: `${s.window_minutes} min`,
-          status: s.status || "Closed",
+          present: (attendanceRecords || []).filter(
+            (record) =>
+              record.class_session_id === s.id &&
+              record.status?.toLowerCase() === "present",
+          ).length,
+          total: studentCountByCourse.get(s.courses?.id) || 0,
+          window: s.start_time && s.end_time
+            ? `${Math.round(
+                (new Date(`1970-01-01T${s.end_time}`) -
+                  new Date(`1970-01-01T${s.start_time}`)) /
+                  60000,
+              )} min`
+            : "N/A",
+          status: s.attendance_open ? "Open" : "Closed",
         }));
 
         setSessions(formattedSessions);
       } catch (err) {
         console.error("Error fetching sessions:", err);
       } finally {
-        setLoading(false);
+        if (initialLoad) {
+          setLoading(false);
+          initialLoad = false;
+        }
       }
     };
 
     fetchInitialData();
+    const refreshInterval = window.setInterval(fetchInitialData, 10000);
+    return () => window.clearInterval(refreshInterval);
   }, []);
 
   const handleChange = (e) => {
@@ -149,30 +193,33 @@ function LecturerSessions() {
       setSubmitting(true);
       setError("");
 
+      const startDateTime = new Date(`${formData.date}T${formData.time}`);
+      const endDateTime = new Date(
+        startDateTime.getTime() + Number(formData.window) * 60_000,
+      );
       const { data, error: insertError } = await supabase
-        .from("sessions")
+        .from("class_sessions")
         .insert([
           {
             course_id: formData.courseId,
-            type: formData.type,
+            session_type: formData.type,
             session_date: formData.date,
             start_time: formData.time,
-            window_minutes: Number(formData.window),
-            total_students: Number(formData.total),
-            present_count: 0,
-            status: "Open",
+            end_time: endDateTime.toTimeString().slice(0, 8),
+            duration_minutes: Number(formData.window),
+            expires_at: endDateTime.toISOString(),
+            attendance_open: true,
+            is_active: true,
           },
         ])
         .select(`
           id,
-          type,
           session_date,
           start_time,
-          present_count,
-          total_students,
-          window_minutes,
-          status,
-          courses (id, code)
+          end_time,
+          session_type,
+          attendance_open,
+          courses (id, course_code)
         `)
         .single();
 
@@ -180,14 +227,14 @@ function LecturerSessions() {
 
       const createdSession = {
         id: data.id,
-        course: data.courses?.code || "N/A",
-        type: data.type,
+        course: data.courses?.course_code || "N/A",
+        type: data.session_type,
         date: formatDate(data.session_date),
         time: formatTime(data.start_time),
         present: 0,
-        total: Number(data.total_students),
-        window: `${data.window_minutes} min`,
-        status: "Open",
+        total: Number(formData.total),
+        window: `${formData.window} min`,
+        status: data.attendance_open ? "Open" : "Closed",
       };
 
       setSessions((prev) => [createdSession, ...prev]);
@@ -213,8 +260,8 @@ function LecturerSessions() {
     if (activeSession) {
       try {
         const { error: updateError } = await supabase
-          .from("sessions")
-          .update({ status: "Closed" })
+          .from("class_sessions")
+          .update({ attendance_open: false, is_active: false })
           .eq("id", activeSession.id);
 
         if (updateError) throw updateError;

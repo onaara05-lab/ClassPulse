@@ -23,7 +23,7 @@ function Login() {
   const role = data.user.user_metadata.role;
 
   if (role === "student") {
-    navigate("/student/dashboard");
+    navigate("/student-dashboard");
   } else if (role === "lecturer") {
     navigate("/lecturer/dashboard");
   } else {

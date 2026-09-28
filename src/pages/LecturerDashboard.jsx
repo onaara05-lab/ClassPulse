@@ -57,7 +57,7 @@ function LecturerDashboard() {
         // 3. Fetch unique enrolled students across those courses
         const { data: enrollments, error: enrollmentsError } = await supabase
           .from("enrollments")
-          .select("student_id")
+          .select("course_id, student_id")
           .in("course_id", courseIds);
 
         if (enrollmentsError) throw enrollmentsError;
@@ -68,7 +68,7 @@ function LecturerDashboard() {
         // 4. Fetch total & open class sessions for these courses
         const { data: sessions, error: sessionsError } = await supabase
           .from("class_sessions")
-          .select("id, attendance_open")
+          .select("id, course_id, attendance_open")
           .in("course_id", courseIds);
 
         if (sessionsError) throw sessionsError;
@@ -90,7 +90,18 @@ function LecturerDashboard() {
 
           if (attendanceError) throw attendanceError;
 
-          const totalPossibleAttendance = totalSessions * totalStudents;
+          const studentsByCourse = new Map();
+          (enrollments || []).forEach(({ course_id }) => {
+            studentsByCourse.set(
+              course_id,
+              (studentsByCourse.get(course_id) || 0) + 1,
+            );
+          });
+          const totalPossibleAttendance = sessions.reduce(
+            (total, session) =>
+              total + (studentsByCourse.get(session.course_id) || 0),
+            0,
+          );
           const totalPresent = attendanceRecords?.length || 0;
           overallAttendanceRate = Math.round(
             (totalPresent / totalPossibleAttendance) * 100

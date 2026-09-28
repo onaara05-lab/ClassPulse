@@ -1,20 +1,68 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import StudentSidebar from "../components/Student/StudentSidebar";
-
-const studentProfile = {
-  name: "Chukwuemeka Eze",
-  matricNumber: "230404001",
-  role: "Student",
-  initials: "CE",
-  email: "c.eze@university.edu",
-  department: "Computer Science",
-  faculty: "Computing",
-  level: "300 Level",
-  semester: "Second Semester 2025/2026",
-};
+import { supabase } from "../supabaseClient";
+import { LuLoader, LuUser } from "react-icons/lu";
 
 function StudentProfile() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [profile, setProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const fetchStudentProfile = useCallback(async () => {
+    try {
+      setLoading(true);
+
+      // 1. Get currently authenticated user session
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+
+      if (userError || !user) throw userError || new Error("User not found");
+
+      // 2. Fetch profile from Supabase 'students' or 'profiles' table
+      const { data, error } = await supabase
+        .from("students")
+        .select("*")
+        .eq("id", user.id)
+        .single();
+
+      if (error && error.code !== "PGRST116") {
+        // Log query error if it isn't simply a missing record
+        console.error("Supabase profile fetch error:", error);
+      }
+
+      // Compute initials from full name or fallback
+      const fullName = data?.full_name || user.user_metadata?.full_name || "Student Name";
+      const nameParts = fullName.trim().split(" ");
+      const initials =
+        nameParts.length >= 2
+          ? `${nameParts[0][0]}${nameParts[nameParts.length - 1][0]}`.toUpperCase()
+          : fullName.slice(0, 2).toUpperCase();
+
+      setProfile({
+        name: fullName,
+        matricNumber: data?.matric_number || user.user_metadata?.matric_number || "N/A",
+        role: "Student",
+        initials,
+        email: user.email || "N/A",
+        department: data?.department || "Computer Science",
+        faculty: data?.faculty || "Computing",
+        level: data?.level ? `${data.level} Level` : "300 Level",
+        semester: data?.semester || "Second Semester 2025/2026",
+      });
+    } catch (err) {
+      console.error("Error loading student profile:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      await fetchStudentProfile();
+    })();
+  }, [fetchStudentProfile]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -56,64 +104,76 @@ function StudentProfile() {
           </div>
 
           {/* Profile Card Container */}
-          <div className="max-w-xl overflow-hidden rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 shadow-sm">
-            {/* Header / Avatar Info */}
-            <div className="flex items-center gap-4 pb-6 border-b border-slate-100">
-              <div className="flex h-14 w-14 sm:h-16 sm:w-16 items-center justify-center rounded-full bg-blue-600 text-lg sm:text-xl font-bold text-white shadow-sm">
-                {studentProfile.initials}
+          {loading ? (
+            <div className="flex max-w-xl flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white p-12 text-slate-500 shadow-sm">
+              <LuLoader className="mb-3 h-8 w-8 animate-spin text-blue-600" />
+              <p className="text-sm font-medium">Loading profile...</p>
+            </div>
+          ) : !profile ? (
+            <div className="flex max-w-xl flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white p-12 text-slate-500 shadow-sm">
+              <LuUser className="mb-3 h-10 w-10 text-slate-400" />
+              <p className="text-sm font-medium">Unable to load profile information.</p>
+            </div>
+          ) : (
+            <div className="max-w-xl overflow-hidden rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+              {/* Header / Avatar Info */}
+              <div className="flex items-center gap-4 border-b border-slate-100 pb-6">
+                <div className="flex h-14 w-14 items-center justify-center rounded-full bg-blue-600 text-lg font-bold text-white shadow-sm sm:h-16 sm:w-16 sm:text-xl">
+                  {profile.initials}
+                </div>
+
+                <div className="space-y-0.5">
+                  <h2 className="text-lg font-bold text-slate-900">
+                    {profile.name}
+                  </h2>
+                  <p className="text-xs font-medium text-slate-400">
+                    {profile.matricNumber}
+                  </p>
+                  <span className="inline-block rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-semibold text-blue-600">
+                    {profile.role}
+                  </span>
+                </div>
               </div>
 
-              <div className="space-y-0.5">
-                <h2 className="text-lg font-bold text-slate-900">
-                  {studentProfile.name}
-                </h2>
-                <p className="text-xs font-medium text-slate-400">
-                  {studentProfile.matricNumber}
-                </p>
-                <span className="inline-block rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-semibold text-blue-600">
-                  {studentProfile.role}
-                </span>
+              {/* Profile Details List */}
+              <div className="mt-6 space-y-4 text-sm">
+                <div className="flex items-center justify-between py-1">
+                  <span className="font-medium text-slate-400">Email</span>
+                  <span className="font-semibold text-slate-800">
+                    {profile.email}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between py-1">
+                  <span className="font-medium text-slate-400">Department</span>
+                  <span className="font-semibold text-slate-800">
+                    {profile.department}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between py-1">
+                  <span className="font-medium text-slate-400">Faculty</span>
+                  <span className="font-semibold text-slate-800">
+                    {profile.faculty}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between py-1">
+                  <span className="font-medium text-slate-400">Level</span>
+                  <span className="font-semibold text-slate-800">
+                    {profile.level}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between py-1">
+                  <span className="font-medium text-slate-400">Semester</span>
+                  <span className="font-semibold text-slate-800">
+                    {profile.semester}
+                  </span>
+                </div>
               </div>
             </div>
-
-            {/* Profile Details List */}
-            <div className="mt-6 space-y-4 text-sm">
-              <div className="flex items-center justify-between py-1">
-                <span className="text-slate-400 font-medium">Email</span>
-                <span className="font-semibold text-slate-800">
-                  {studentProfile.email}
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between py-1">
-                <span className="text-slate-400 font-medium">Department</span>
-                <span className="font-semibold text-slate-800">
-                  {studentProfile.department}
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between py-1">
-                <span className="text-slate-400 font-medium">Faculty</span>
-                <span className="font-semibold text-slate-800">
-                  {studentProfile.faculty}
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between py-1">
-                <span className="text-slate-400 font-medium">Level</span>
-                <span className="font-semibold text-slate-800">
-                  {studentProfile.level}
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between py-1">
-                <span className="text-slate-400 font-medium">Semester</span>
-                <span className="font-semibold text-slate-800">
-                  {studentProfile.semester}
-                </span>
-              </div>
-            </div>
-          </div>
+          )}
         </div>
       </main>
     </div>

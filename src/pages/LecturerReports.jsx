@@ -62,11 +62,15 @@ function LecturerReports() {
         // Fetch courses taught by lecturer
         const { data: coursesData } = await supabase
           .from("courses")
-          .select("id, code, title")
+          .select("id, course_code, course_name")
           .eq("lecturer_id", user.id);
 
         if (coursesData && isMounted) {
-          setCourses(coursesData);
+          setCourses(coursesData.map((course) => ({
+            id: course.id,
+            code: course.course_code,
+            title: course.course_name,
+          })));
         }
 
         // Fetch export logs
@@ -143,22 +147,113 @@ function LecturerReports() {
     setDownloadingId(downloadKey);
 
     try {
-      // Fetch attendance and student data from Supabase
-      let query = supabase.from("attendance_records").select(`
-          id,
-          status,
-          created_at,
-          courses (code, title),
-          profiles (full_name, staff_id, email)
-        `);
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+      if (userError || !user) throw userError || new Error("User not found");
 
-      if (selectedCourse !== "all") {
-        query = query.eq("course_id", selectedCourse);
+      const { data: lecturerCourses, error: coursesError } = await supabase
+        .from("courses")
+        .select("id, course_code, course_name")
+        .eq("lecturer_id", user.id);
+      if (coursesError) throw coursesError;
+
+      const selectedCourses = (lecturerCourses || []).filter(
+        (course) => selectedCourse === "all" || course.id === selectedCourse,
+      );
+      const courseById = new Map(
+        selectedCourses.map((course) => [course.id, course]),
+      );
+      const courseIds = selectedCourses.map((course) => course.id);
+
+      const { data: sessions, error: sessionsError } = courseIds.length
+        ? await supabase
+            .from("class_sessions")
+            .select("id, course_id")
+            .in("course_id", courseIds)
+        : { data: [], error: null };
+      if (sessionsError) throw sessionsError;
+
+      const sessionToCourse = new Map(
+        (sessions || []).map((session) => [session.id, session.course_id]),
+      );
+      const sessionIds = [...sessionToCourse.keys()];
+      let enrolledStudents = [];
+      if (reportType === "at-risk" && courseIds.length > 0) {
+        const { data, error: enrollmentsError } = await supabase
+          .from("enrollments")
+          .select("course_id, student_id")
+          .in("course_id", courseIds);
+        if (enrollmentsError) throw enrollmentsError;
+        enrolledStudents = data || [];
       }
+      const { data: rawRecords, error: recordsError } = sessionIds.length
+        ? await supabase
+            .from("attendance_records")
+            .select("id, status, created_at, marked_at, class_session_id, student_id")
+            .in("class_session_id", sessionIds)
+        : { data: [], error: null };
+      if (recordsError) throw recordsError;
 
-      const { data: records, error } = await query;
+      const studentIds = [...new Set([
+        ...(rawRecords || []).map((record) => record.student_id),
+        ...enrolledStudents.map((enrollment) => enrollment.student_id),
+      ])];
+      const { data: profiles, error: profilesError } = studentIds.length
+        ? await supabase
+            .from("profiles")
+            .select("id, full_name, staff_id, email")
+            .in("id", studentIds)
+        : { data: [], error: null };
+      if (profilesError) throw profilesError;
 
-      if (error) throw error;
+      const profileById = new Map((profiles || []).map((profile) => [profile.id, profile]));
+      let records = (rawRecords || []).map((record) => {
+        const course = courseById.get(sessionToCourse.get(record.class_session_id));
+        return {
+          ...record,
+          created_at: record.marked_at || record.created_at,
+          courses: {
+            code: course?.course_code || "N/A",
+            title: course?.course_name || "N/A",
+          },
+          profiles: profileById.get(record.student_id),
+        };
+      });
+
+      if (reportType === "at-risk") {
+        const sessionsByCourse = new Map();
+        (sessions || []).forEach((session) => {
+          sessionsByCourse.set(
+            session.course_id,
+            (sessionsByCourse.get(session.course_id) || 0) + 1,
+          );
+        });
+        const presentByStudentCourse = new Map();
+        (rawRecords || []).forEach((record) => {
+          if (record.status !== "present" && record.status !== "late") return;
+          const courseId = sessionToCourse.get(record.class_session_id);
+          const key = `${record.student_id}:${courseId}`;
+          presentByStudentCourse.set(key, (presentByStudentCourse.get(key) || 0) + 1);
+        });
+
+        records = enrolledStudents.flatMap((enrollment) => {
+          const totalSessions = sessionsByCourse.get(enrollment.course_id) || 0;
+          if (totalSessions === 0) return [];
+          const attended = presentByStudentCourse.get(
+            `${enrollment.student_id}:${enrollment.course_id}`,
+          ) || 0;
+          const percentage = Math.round((attended / totalSessions) * 100);
+          if (percentage >= 75) return [];
+          const course = courseById.get(enrollment.course_id);
+          return [{
+            status: `At Risk (${percentage}%)`,
+            courses: { code: course?.course_code || "N/A" },
+            profiles: profileById.get(enrollment.student_id),
+          }];
+        });
+      }
 
       const dateStr = new Date().toISOString().slice(0, 10);
       const fileName = `${reportType.toUpperCase()}_${dateStr}.${format.toLowerCase()}`;
@@ -173,14 +268,12 @@ function LecturerReports() {
             "Attendance Status",
           ]);
           (records || []).forEach((r) => {
-            if (r.status === "absent") {
-              csvRows.push([
-                r.profiles?.full_name || "N/A",
-                r.profiles?.staff_id || "N/A",
-                r.courses?.code || "N/A",
-                r.status,
-              ]);
-            }
+            csvRows.push([
+              r.profiles?.full_name || "N/A",
+              r.profiles?.staff_id || "N/A",
+              r.courses?.code || "N/A",
+              r.status,
+            ]);
           });
         } else {
           csvRows.push([

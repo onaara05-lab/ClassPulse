@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Plus, X, CalendarDays, Menu, Loader2 } from "lucide-react";
 
 import logo from "../assets/classpulse-logo.png";
@@ -9,7 +9,7 @@ const DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
 function LecturerSchedule() {
   const [weeklySchedule, setWeeklySchedule] = useState(
-    DAYS_OF_WEEK.map((day) => ({ day, classes: [] }))
+    DAYS_OF_WEEK.map((day) => ({ day, classes: [] })),
   );
   const [availableCourses, setAvailableCourses] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -28,7 +28,18 @@ function LecturerSchedule() {
 
   const [error, setError] = useState("");
 
-  const fetchScheduleData = async () => {
+  // 1. Helper function defined first
+  const formatDisplayTime = (timeStr) => {
+    if (!timeStr) return "";
+    const [hours, minutes] = timeStr.split(":");
+    const hour = Number(hours);
+    const period = hour >= 12 ? "PM" : "AM";
+    const formattedHour = hour % 12 || 12;
+    return `${formattedHour}:${minutes} ${period}`;
+  };
+
+  // 2. Wrapped in useCallback to satisfy React hooks dependency rules
+  const fetchScheduleData = useCallback(async () => {
     try {
       setLoading(true);
       const {
@@ -43,13 +54,18 @@ function LecturerSchedule() {
       // 1. Fetch lecturer's assigned courses
       const { data: coursesData, error: coursesError } = await supabase
         .from("courses")
-        .select("id, code, title")
+        .select("id, course_code, course_name")
         .eq("lecturer_id", user.id);
 
       if (coursesError) throw coursesError;
-      setAvailableCourses(coursesData || []);
+      const courses = (coursesData || []).map((course) => ({
+        id: course.id,
+        code: course.course_code,
+        title: course.course_name,
+      }));
+      setAvailableCourses(courses);
 
-      const courseIds = (coursesData || []).map((c) => c.id);
+      const courseIds = courses.map((course) => course.id);
 
       if (courseIds.length === 0) {
         setLoading(false);
@@ -59,15 +75,17 @@ function LecturerSchedule() {
       // 2. Fetch schedules for these courses
       const { data: scheduleData, error: scheduleError } = await supabase
         .from("schedules")
-        .select(`
+        .select(
+          `
           id,
           day,
           start_time,
           end_time,
           venue,
           student_count,
-          courses (id, code)
-        `)
+          courses (id, course_code)
+        `,
+        )
         .in("course_id", courseIds);
 
       if (scheduleError) throw scheduleError;
@@ -75,14 +93,12 @@ function LecturerSchedule() {
       // Format schedule items for the UI grid
       const formattedSchedule = DAYS_OF_WEEK.map((day) => {
         const dayClasses = (scheduleData || [])
-          .filter(
-            (item) => item.day.toLowerCase() === day.toLowerCase()
-          )
+          .filter((item) => item.day.toLowerCase() === day.toLowerCase())
           .map((item) => ({
             id: item.id,
-            course: item.courses?.code || "N/A",
+            course: item.courses?.course_code || "N/A",
             time: `${formatDisplayTime(item.start_time)} - ${formatDisplayTime(
-              item.end_time
+              item.end_time,
             )}`,
             venue: item.venue || "TBD",
             students: item.student_count || 0,
@@ -97,31 +113,18 @@ function LecturerSchedule() {
       setWeeklySchedule(formattedSchedule);
     } catch (err) {
       console.error("Error fetching schedule data:", err);
+      setError(err.message || "Could not load your courses. Please try again.");
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-  const fetchScheduleData = async () => {
-    try {
-      // Your fetching logic here...
-    } catch (err) {
-      console.error("Error fetching schedule data:", err);
-    }
-  };
-
-  fetchScheduleData();
-}, []);
-
-  const formatDisplayTime = (timeStr) => {
-    if (!timeStr) return "";
-    const [hours, minutes] = timeStr.split(":");
-    const hour = Number(hours);
-    const period = hour >= 12 ? "PM" : "AM";
-    const formattedHour = hour % 12 || 12;
-    return `${formattedHour}:${minutes} ${period}`;
-  };
+    const timer = setTimeout(() => {
+      fetchScheduleData();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [fetchScheduleData]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -331,10 +334,10 @@ function LecturerSchedule() {
             {/* Form */}
             <form onSubmit={handleSubmit} className="space-y-4">
               {/* Course Selector */}
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-text-primary">
-                  Course
-                </label>
+            <div>
+              <label className="mb-1.5 block text-sm font-medium text-text-primary">
+                Course
+              </label>
 
                 <select
                   name="courseId"
@@ -349,6 +352,11 @@ function LecturerSchedule() {
                     </option>
                   ))}
                 </select>
+                {!loading && availableCourses.length === 0 && (
+                  <p className="mt-1.5 text-xs text-text-secondary">
+                    No courses are assigned to your lecturer account yet.
+                  </p>
+                )}
               </div>
 
               {/* Day Selector */}

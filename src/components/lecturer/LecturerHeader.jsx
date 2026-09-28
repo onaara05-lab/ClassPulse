@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { LuBell, LuMenu, LuActivity } from "react-icons/lu";
-import { X } from "lucide-react";
+import { X, Loader2 } from "lucide-react";
+import { supabase } from "../../supabaseClient"; // Adjust path to your Supabase client instance
 
 function LecturerHeader({
   title = "Lecturer Dashboard",
@@ -13,12 +14,83 @@ function LecturerHeader({
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [sessionActive, setSessionActive] = useState(false);
   const [activeSessionData, setActiveSessionData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [userProfile, setUserProfile] = useState({
+    name: "Lecturer",
+    initials: "L",
+  });
 
   const [formData, setFormData] = useState({
     course: "",
     sessionType: "Lecture",
-    duration: "15 minutes",
+    duration: "15",
   });
+
+  // Fetch current user and active session on component mount
+  useEffect(() => {
+    const fetchInitialData = async () => {
+  try {
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      console.warn("No active Supabase user found:", authError?.message);
+      return;
+    }
+
+    // 1. Fetch profile row
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (profileError) {
+      console.error("Supabase profile error:", profileError.message);
+    }
+
+    // 2. Fallback cascade for user name
+    const fullName =
+      profile?.full_name ||
+      profile?.name ||
+      user.user_metadata?.full_name ||
+      user.user_metadata?.name ||
+      user.email?.split("@")[0] ||
+      "Lecturer";
+
+    const names = fullName.trim().split(" ");
+    const initials =
+      names.length > 1
+        ? `${names[0][0]}${names[names.length - 1][0]}`.toUpperCase()
+        : names[0][0]?.toUpperCase() || "L";
+
+    setUserProfile({
+      name: fullName,
+      initials,
+    });
+
+    // 3. Fetch active attendance session
+    const { data: activeSession } = await supabase
+      .from("attendance_sessions")
+      .select("*")
+      .eq("lecturer_id", user.id)
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .maybeSingle();
+
+    if (activeSession) {
+      setSessionActive(true);
+      setActiveSessionData(activeSession);
+    }
+  } catch (error) {
+    console.error("Error initializing header data:", error.message);
+  }
+};
+
+    fetchInitialData();
+  }, []);
 
   // Handle opening modal
   const handleOpenModal = () => {
@@ -32,23 +104,77 @@ function LecturerHeader({
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-  // Submit form and set session as active
-  const handleSubmit = (e) => {
+  // Submit form and create new session in Supabase
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    setActiveSessionData({ ...formData });
-    setSessionActive(true);
+    setLoading(true);
+
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) throw new Error("User not authenticated");
+
+      const durationMinutes = parseInt(formData.duration, 10);
+      const expiresAt = new Date(
+        Date.now() + durationMinutes * 60 * 1000,
+      ).toISOString();
+
+      const newSessionPayload = {
+        lecturer_id: user.id,
+        course: formData.course,
+        session_type: formData.sessionType,
+        duration_minutes: durationMinutes,
+        expires_at: expiresAt,
+        is_active: true,
+      };
+
+      const { data, error } = await supabase
+        .from("attendance_sessions")
+        .insert([newSessionPayload])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      setActiveSessionData(data);
+      setSessionActive(true);
+    } catch (error) {
+      console.error("Error starting session:", error.message);
+      alert("Failed to start session: " + error.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // Close active session
-  const handleCloseSession = () => {
-    setSessionActive(false);
-    setIsModalOpen(false);
-    setActiveSessionData(null);
-    setFormData({
-      course: "",
-      sessionType: "Lecture",
-      duration: "15 minutes",
-    });
+  // Close active session in Supabase
+  const handleCloseSession = async () => {
+    setLoading(true);
+    try {
+      if (activeSessionData?.id) {
+        const { error } = await supabase
+          .from("attendance_sessions")
+          .update({ is_active: false, ended_at: new Date().toISOString() })
+          .eq("id", activeSessionData.id);
+
+        if (error) throw error;
+      }
+
+      setSessionActive(false);
+      setIsModalOpen(false);
+      setActiveSessionData(null);
+      setFormData({
+        course: "",
+        sessionType: "Lecture",
+        duration: "15",
+      });
+    } catch (error) {
+      console.error("Error closing session:", error.message);
+      alert("Failed to close session: " + error.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -90,8 +216,6 @@ function LecturerHeader({
               aria-label="Notifications"
             >
               <LuBell size={21} strokeWidth={1.8} />
-
-              {/* Notification Indicator */}
               <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-red-500" />
             </button>
 
@@ -119,15 +243,14 @@ function LecturerHeader({
             <div className="flex items-center gap-3">
               {/* Avatar */}
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-bold text-white">
-                AD
+                {userProfile.initials}
               </div>
 
               {/* Lecturer Information */}
               <div className="hidden sm:block">
                 <p className="text-sm font-semibold text-text-primary">
-                  Dr. Adeyemi
+                  {userProfile.name}
                 </p>
-
                 <p className="text-xs text-text-secondary">Lecturer</p>
               </div>
             </div>
@@ -175,7 +298,7 @@ function LecturerHeader({
 
                 {/* Subtitle Details */}
                 <p className="mt-1 text-sm text-text-secondary">
-                  {activeSessionData?.sessionType || "Lecture"} - Students can
+                  {activeSessionData?.session_type || "Lecture"} - Students can
                   now mark attendance
                 </p>
 
@@ -189,8 +312,10 @@ function LecturerHeader({
                 <button
                   type="button"
                   onClick={handleCloseSession}
-                  className="mt-8 w-full rounded-xl bg-red-600 py-3.5 text-sm font-semibold text-white shadow-md transition hover:bg-red-700"
+                  disabled={loading}
+                  className="mt-8 flex w-full items-center justify-center gap-2 rounded-xl bg-red-600 py-3.5 text-sm font-semibold text-white shadow-md transition hover:bg-red-700 disabled:opacity-50"
                 >
+                  {loading && <Loader2 size={18} className="animate-spin" />}
                   Close Session
                 </button>
               </div>
@@ -258,11 +383,11 @@ function LecturerHeader({
                     onChange={handleChange}
                     className="w-full rounded-xl border border-border bg-background px-4 py-3 text-sm text-text-primary outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
                   >
-                    <option value="5 minutes">5 minutes</option>
-                    <option value="10 minutes">10 minutes</option>
-                    <option value="15 minutes">15 minutes</option>
-                    <option value="30 minutes">30 minutes</option>
-                    <option value="60 minutes">60 minutes</option>
+                    <option value="5">5 minutes</option>
+                    <option value="10">10 minutes</option>
+                    <option value="15">15 minutes</option>
+                    <option value="30">30 minutes</option>
+                    <option value="60">60 minutes</option>
                   </select>
                 </div>
 
@@ -278,8 +403,10 @@ function LecturerHeader({
 
                   <button
                     type="submit"
-                    className="w-1/2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-white shadow-md transition hover:opacity-90 sm:w-auto sm:px-6"
+                    disabled={loading}
+                    className="flex w-1/2 items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-white shadow-md transition hover:opacity-90 disabled:opacity-50 sm:w-auto sm:px-6"
                   >
+                    {loading && <Loader2 size={18} className="animate-spin" />}
                     Open Session
                   </button>
                 </div>

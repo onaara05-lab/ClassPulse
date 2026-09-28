@@ -36,10 +36,9 @@ function Register() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-
     setErrorMessage("");
 
-    // Check passwords
+    // Validate Passwords
     if (formData.password !== formData.confirmPassword) {
       setErrorMessage("Passwords do not match.");
       return;
@@ -47,7 +46,7 @@ function Register() {
 
     if (!supabase) {
       setErrorMessage(
-        "Supabase client not initialized. Check .env and restart dev server."
+        "Supabase client not initialized. Check your .env file and restart the server.",
       );
       return;
     }
@@ -55,12 +54,10 @@ function Register() {
     try {
       setLoading(true);
 
-      // Create account in Supabase Auth
-      const { data, error } = await supabase.auth.signUp({
+      // 1. Create account in Supabase Auth & pass metadata for the database trigger
+      const { data: authData, error: authError } = await supabase.auth.signUp({
         email: formData.email,
         password: formData.password,
-
-        // Extra information attached to the Auth user
         options: {
           data: {
             full_name: formData.fullName,
@@ -75,23 +72,23 @@ function Register() {
         },
       });
 
-      if (error) {
-        setErrorMessage(error.message);
+      if (authError) {
+        console.error("Full Auth Error:", authError);
+        setErrorMessage(authError.message);
         return;
       }
 
-      console.log("Student registered successfully:", data.user);
-
-      if (data.session) {
-        navigate("/studentdashboard");
-        return;
+      // 2. Handle session / confirmation redirect
+      if (authData.session) {
+        navigate("/student-dashboard");
+      } else {
+        alert(
+          "Registration successful! Please check your email to verify your account before logging in.",
+        );
+        navigate("/login");
       }
 
-      alert(
-        "Student account created. Please check your email to verify it, then log in."
-      );
-
-      // Clear form
+      // Clear Form Fields
       setFormData({
         fullName: "",
         matricNumber: "",
@@ -104,11 +101,10 @@ function Register() {
         password: "",
         confirmPassword: "",
       });
-
       setRole("student");
     } catch (error) {
       console.error("Registration error:", error);
-      setErrorMessage("Something went wrong. Please try again.");
+      setErrorMessage("An unexpected error occurred. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -140,7 +136,7 @@ function Register() {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Role */}
+          {/* Role Selection */}
           <div>
             <label className="mb-2 block text-sm font-medium text-text-primary">
               Register As
@@ -170,7 +166,7 @@ function Register() {
             </div>
           </div>
 
-          {/* Student Register Form Fields */}
+          {/* Student Form Fields */}
           <div id="student" className="space-y-4">
             {/* Full Name */}
             <div>
@@ -361,7 +357,7 @@ function Register() {
                   value={formData.password}
                   onChange={handleChange}
                   placeholder="Create a password"
-                  minLength="6"
+                  minLength={6}
                   className="w-full rounded-lg border border-border bg-surface px-4 py-3 pr-10 text-sm text-text-primary outline-none transition placeholder:text-text-secondary focus:border-primary focus:ring-2 focus:ring-primary/10"
                   required
                 />
@@ -395,7 +391,7 @@ function Register() {
                   value={formData.confirmPassword}
                   onChange={handleChange}
                   placeholder="Confirm your password"
-                  minLength="6"
+                  minLength={6}
                   className="w-full rounded-lg border border-border bg-surface px-4 py-3 pr-10 text-sm text-text-primary outline-none transition placeholder:text-text-secondary focus:border-primary focus:ring-2 focus:ring-primary/10"
                   required
                 />
@@ -414,7 +410,7 @@ function Register() {
             </div>
           </div>
 
-          {/* Error Message */}
+          {/* Error Display */}
           {errorMessage && (
             <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">
               {errorMessage}
@@ -431,7 +427,7 @@ function Register() {
           </button>
         </form>
 
-        {/* Login Link */}
+        {/* Login Navigation Link */}
         <p className="mt-6 text-center text-sm text-text-secondary">
           Already have an account?{" "}
           <Link

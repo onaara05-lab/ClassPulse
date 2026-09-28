@@ -48,10 +48,10 @@ function LecturerProfile() {
         if (userError) throw userError;
         if (!user) throw new Error("No authenticated user found.");
 
-        // 2. Query lecturer profile details from database
+        // 2. Query lecturer profile details matching existing schema columns
         const { data: profile, error: profileError } = await supabase
           .from("profiles")
-          .select("full_name, email, staff_id, department, faculty, academic_session, role")
+          .select("full_name, staff_id, department, academic_session, role")
           .eq("id", user.id)
           .single();
 
@@ -65,7 +65,9 @@ function LecturerProfile() {
           .select("id", { count: "exact", head: true })
           .eq("lecturer_id", user.id);
 
-        if (coursesError) throw coursesError;
+        if (coursesError && coursesError.code !== "PGRST116") {
+          console.warn("Could not fetch courses count:", coursesError.message);
+        }
 
         if (isMounted) {
           const userMetadata = user.user_metadata || {};
@@ -83,17 +85,31 @@ function LecturerProfile() {
 
           const resolvedRole = profile?.role || userMetadata.role || "lecturer";
 
+          const resolvedFaculty =
+            userMetadata.faculty ||
+            "N/A";
+
+          const resolvedDepartment =
+            profile?.department ||
+            userMetadata.department ||
+            "N/A";
+
+          const resolvedSession =
+            profile?.academic_session ||
+            userMetadata.academic_session ||
+            "2025/2026";
+
           setProfileDetails({
             name: resolvedName,
             staffId: resolvedStaffId,
             role: resolvedRole.charAt(0).toUpperCase() + resolvedRole.slice(1),
-            email: profile?.email || user.email || "N/A",
-            department: profile?.department || "N/A",
-            faculty: profile?.faculty || "N/A",
+            email: user.email || "N/A",
+            department: resolvedDepartment,
+            faculty: resolvedFaculty,
             coursesTaught: `${courseCount || 0} active ${
               courseCount === 1 ? "course" : "courses"
             }`,
-            academicYear: profile?.academic_session || "2025/2026",
+            academicYear: resolvedSession,
           });
         }
       } catch (err) {

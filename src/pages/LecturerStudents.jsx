@@ -296,7 +296,7 @@ function LecturerStudents() {
     const refreshId = window.setInterval(fetchStudentsData, 8000);
 
     return () => window.clearInterval(refreshId);
-  }, []);
+   }, []);
 
   const filteredStudents = students.filter((student) => {
     const matchesSearch =

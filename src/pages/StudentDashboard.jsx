@@ -282,7 +282,9 @@ function StudentDashboard() {
       if (existingRecord) {
         setTodaysClasses((prev) =>
           prev.map((item) =>
-            item.id === selectedSessionId ? { ...item, status: "Marked" } : item,
+            item.id === selectedSessionId
+              ? { ...item, status: "Marked" }
+              : item,
           ),
         );
         setIsSuccess(true);
@@ -336,7 +338,7 @@ function StudentDashboard() {
   };
 
   const activeSessions = todaysClasses.filter(
-    (item) => item.status === "Upcoming" && item.isOpen,
+    (item) => item.status === "Absent" && item.isOpen,
   );
 
   if (loading) {
@@ -737,8 +739,8 @@ function StudentDashboard() {
                             course.percent < 60
                               ? "text-red-600"
                               : course.percent < 75
-                              ? "text-amber-600"
-                              : "text-emerald-600"
+                                ? "text-amber-600"
+                                : "text-emerald-600"
                           }`}
                         >
                           {course.percent}%

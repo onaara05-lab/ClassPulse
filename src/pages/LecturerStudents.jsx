@@ -6,6 +6,11 @@ import { supabase } from "../supabaseClient";
 
 const filters = ["All", "Healthy", "Warning", "At Risk"];
 
+const normalizeAttendanceStatus = (value) =>
+  String(value ?? "")
+    .trim()
+    .toLowerCase();
+
 function LecturerStudents() {
   const [students, setStudents] = useState([]);
   const [searchTerm, setSearchTerm] = useState("");
@@ -28,15 +33,75 @@ function LecturerStudents() {
           return;
         }
 
-        // 2. Fetch courses taught by this lecturer
-        const { data: coursesData, error: coursesError } = await supabase
-          .from("courses")
-          .select("id, course_code")
-          .eq("lecturer_id", user.id);
+        const resolveLecturerCourseIds = async () => {
+          const { data: profileData, error: profileError } = await supabase
+            .from("profiles")
+            .select("full_name")
+            .eq("id", user.id)
+            .maybeSingle();
 
-        if (coursesError) throw coursesError;
+          if (profileError) {
+            console.warn(
+              "Profile fallback lookup failed:",
+              profileError.message,
+            );
+          }
 
-        const courseIds = (coursesData || []).map((c) => c.id);
+          const candidateNames = [
+            profileData?.full_name,
+            user.user_metadata?.full_name,
+            user.user_metadata?.name,
+            user.email?.split("@")[0],
+          ]
+            .map((value) => value?.trim())
+            .filter(Boolean);
+
+          const { data: lecturerCourses = [], error: directCoursesError } =
+            await supabase
+              .from("courses")
+              .select("id, course_code")
+              .eq("lecturer_id", user.id);
+
+          if (directCoursesError) {
+            console.warn(
+              "Direct lecturer course lookup failed:",
+              directCoursesError.message,
+            );
+          }
+
+          let courseIds = [
+            ...new Set((lecturerCourses || []).map((course) => course.id)),
+          ];
+
+          for (const candidateName of [...new Set(candidateNames)]) {
+            if (courseIds.length > 0) break;
+
+            const { data: namedCourses = [], error: namedCoursesError } =
+              await supabase
+                .from("courses")
+                .select("id, course_code")
+                .eq("lecturer_name", candidateName);
+
+            if (namedCoursesError) {
+              console.warn(
+                "Fallback lecturer-name lookup failed:",
+                namedCoursesError.message,
+              );
+              continue;
+            }
+
+            courseIds = [
+              ...new Set([
+                ...courseIds,
+                ...namedCourses.map((course) => course.id),
+              ]),
+            ];
+          }
+
+          return [...new Set(courseIds)];
+        };
+
+        const courseIds = await resolveLecturerCourseIds();
 
         if (courseIds.length === 0) {
           setStudents([]);
@@ -44,29 +109,40 @@ function LecturerStudents() {
           return;
         }
 
-        // Create a lookup map for course codes
+        // 2. Fetch course details to build code lookup map
+        const { data: coursesData, error: coursesError } = await supabase
+          .from("courses")
+          .select("id, course_code")
+          .in("id", courseIds);
+
+        if (coursesError) throw coursesError;
+
         const courseMap = {};
         (coursesData || []).forEach((c) => {
-          courseMap[c.id] = c.course_code;
+          courseMap[c.id] = c.course_code || "N/A";
         });
 
         // 3. Fetch enrollments for these courses including student profiles
-        const { data: enrollmentsData, error: enrollmentsError } = await supabase
-          .from("enrollments")
-          .select(`
-            id,
-            course_id,
-            student_id,
-            students:student_id (
+        const { data: enrollmentsData, error: enrollmentsError } =
+          await supabase
+            .from("enrollments")
+            .select(
+              `
               id,
-              full_name,
-              matric_number
+              course_id,
+              student_id,
+              students:student_id (
+                id,
+                full_name,
+                matric_number
+              )
+            `,
             )
-          `)
-          .in("course_id", courseIds);
+            .in("course_id", courseIds);
 
         if (enrollmentsError) throw enrollmentsError;
 
+        // 4. Fetch class sessions for these courses
         const { data: sessions, error: sessionsError } = await supabase
           .from("class_sessions")
           .select("id, course_id")
@@ -78,13 +154,14 @@ function LecturerStudents() {
           (sessions || []).map((session) => [session.id, session.course_id]),
         );
         const sessionIds = [...sessionToCourse.keys()];
+
+        // 5. Fetch attendance records
         const { data: attendanceRecords, error: attendanceError } =
           sessionIds.length > 0
             ? await supabase
                 .from("attendance_records")
                 .select("student_id, class_session_id, status")
                 .in("class_session_id", sessionIds)
-                .eq("status", "present")
             : { data: [], error: null };
 
         if (attendanceError) throw attendanceError;
@@ -98,15 +175,77 @@ function LecturerStudents() {
         });
 
         const presentByStudentCourse = new Map();
+        const seenAttendance = new Set();
         (attendanceRecords || []).forEach((record) => {
+          const status = normalizeAttendanceStatus(record.status);
+          if (status !== "present" && status !== "late") return;
+
           const courseId = sessionToCourse.get(record.class_session_id);
+          const uniqueKey = `${record.student_id}:${courseId}:${record.class_session_id}`;
+          if (seenAttendance.has(uniqueKey)) return;
+          seenAttendance.add(uniqueKey);
+
           const key = `${record.student_id}:${courseId}`;
-          presentByStudentCourse.set(key, (presentByStudentCourse.get(key) || 0) + 1);
+          presentByStudentCourse.set(
+            key,
+            (presentByStudentCourse.get(key) || 0) + 1,
+          );
         });
 
-        // Compute attendance from the same session records students mark.
-        const formattedStudents = (enrollmentsData || []).map((e) => {
-          const studentName = e.students?.full_name || "Unknown Student";
+        let baseStudentList = [];
+
+        if (enrollmentsData && enrollmentsData.length > 0) {
+          baseStudentList = enrollmentsData.map((e) => ({
+            id: e.id,
+            course_id: e.course_id,
+            student_id: e.student_id,
+            student: e.students,
+          }));
+        } else {
+          // Fallback: If enrollments table is empty, collect unique students from attendance records
+          const uniqueAttendeeKeys = new Set();
+          (attendanceRecords || []).forEach((record) => {
+            const courseId = sessionToCourse.get(record.class_session_id);
+            if (record.student_id && courseId) {
+              uniqueAttendeeKeys.add(`${record.student_id}:${courseId}`);
+            }
+          });
+
+          const uniqueStudentIds = [
+            ...new Set(
+              Array.from(uniqueAttendeeKeys).map((k) => k.split(":")[0]),
+            ),
+          ];
+
+          let profiles = [];
+          if (uniqueStudentIds.length > 0) {
+            const { data: profileData } = await supabase
+              .from("profiles")
+              .select("id, full_name, matric_number")
+              .in("id", uniqueStudentIds);
+            profiles = profileData || [];
+          }
+
+          const profileMap = new Map(profiles.map((p) => [p.id, p]));
+
+          Array.from(uniqueAttendeeKeys).forEach((key) => {
+            const [studentId, courseId] = key.split(":");
+            baseStudentList.push({
+              id: key,
+              course_id: courseId,
+              student_id: studentId,
+              student: profileMap.get(studentId) || {
+                id: studentId,
+                full_name: "Unknown Student",
+                matric_number: "N/A",
+              },
+            });
+          });
+        }
+
+        // Format student items for the table
+        const formattedStudents = baseStudentList.map((item) => {
+          const studentName = item.student?.full_name || "Unknown Student";
           const initials = studentName
             .split(" ")
             .map((n) => n[0])
@@ -114,12 +253,18 @@ function LecturerStudents() {
             .substring(0, 2)
             .toUpperCase();
 
-          const totalSessions = sessionsByCourse.get(e.course_id) || 0;
+          const totalSessions = sessionsByCourse.get(item.course_id) || 0;
           const presentCount =
-            presentByStudentCourse.get(`${e.student_id}:${e.course_id}`) || 0;
-          const attendance = totalSessions
-            ? Math.round((presentCount / totalSessions) * 100)
-            : 0;
+            presentByStudentCourse.get(
+              `${item.student_id}:${item.course_id}`,
+            ) || 0;
+
+          const attendance =
+            totalSessions > 0
+              ? Math.min(100, Math.round((presentCount / totalSessions) * 100))
+              : presentCount > 0
+                ? 100
+                : 0;
 
           const status =
             attendance >= 80
@@ -129,11 +274,11 @@ function LecturerStudents() {
                 : "At Risk";
 
           return {
-            id: e.id,
+            id: item.id,
             initials,
             name: studentName,
-            matricNumber: e.students?.matric_number || "N/A",
-            course: courseMap[e.course_id] || "N/A",
+            matricNumber: item.student?.matric_number || "N/A",
+            course: courseMap[item.course_id] || "N/A",
             attendance,
             status,
           };
@@ -148,6 +293,9 @@ function LecturerStudents() {
     };
 
     fetchStudentsData();
+    const refreshId = window.setInterval(fetchStudentsData, 8000);
+
+    return () => window.clearInterval(refreshId);
   }, []);
 
   const filteredStudents = students.filter((student) => {
@@ -251,7 +399,7 @@ function LecturerStudents() {
               </div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[850px] text-left">
+                <table className="w-full min-w-[212.5rem] text-left">
                   <thead className="border-b border-border bg-background">
                     <tr>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">
@@ -279,8 +427,8 @@ function LecturerStudents() {
                           student.attendance >= 80
                             ? "bg-emerald-500"
                             : student.attendance >= 60
-                            ? "bg-amber-500"
-                            : "bg-red-500";
+                              ? "bg-amber-500"
+                              : "bg-red-500";
 
                         const statusStyles = {
                           Healthy: "bg-emerald-100 text-emerald-700",

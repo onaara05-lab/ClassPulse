@@ -46,9 +46,10 @@ function LecturerRiskMonitor() {
 
         const courseIds = courses.map((c) => c.id);
 
+        // 2. Fetch enrollments and spread student columns using '*'
         const { data: enrollments, error: enrollmentsError } = await supabase
           .from("enrollments")
-          .select(`course_id, student_id, students:student_id(full_name, matric_number)`)
+          .select(`course_id, student_id, students:student_id(*)`)
           .in("course_id", courseIds);
         if (enrollmentsError) throw enrollmentsError;
 
@@ -85,7 +86,10 @@ function LecturerRiskMonitor() {
           if (record.status !== "present" && record.status !== "late") return;
           const courseId = courseBySessionId.get(record.class_session_id);
           const key = `${record.student_id}-${courseId}`;
-          presentByStudentCourse.set(key, (presentByStudentCourse.get(key) || 0) + 1);
+          presentByStudentCourse.set(
+            key,
+            (presentByStudentCourse.get(key) || 0) + 1,
+          );
         });
 
         // Calculate each enrolled student's attendance against all sessions.
@@ -96,19 +100,38 @@ function LecturerRiskMonitor() {
           const totalSessions = sessionsByCourse.get(enrollment.course_id) || 0;
           const key = `${enrollment.student_id}-${enrollment.course_id}`;
           const attendedSessions = presentByStudentCourse.get(key) || 0;
-          const percentage = totalSessions > 0
-            ? Math.round((attendedSessions / totalSessions) * 100)
-            : 0;
+          const percentage =
+            totalSessions > 0
+              ? Math.round((attendedSessions / totalSessions) * 100)
+              : 0;
 
           if (percentage < 60) counts.atRisk += 1;
           else if (percentage <= 75) counts.warning += 1;
           else counts.healthy += 1;
 
+          const studentRecord = enrollment.students || {};
+
+          const fullName =
+            studentRecord.full_name || studentRecord.name || "Unknown Student";
+
+          const matricValue =
+            studentRecord.matric_number ||
+            studentRecord.matricNumber ||
+            studentRecord.matric_no ||
+            studentRecord.matric ||
+            studentRecord.mat_no ||
+            studentRecord.registration_number ||
+            studentRecord.registrationNo ||
+            studentRecord.reg_no ||
+            studentRecord.student_id_no ||
+            "N/A";
+
           compiledStudents.push({
             id: key,
             studentId: enrollment.student_id,
-            name: enrollment.students?.full_name || "Unknown Student",
-            matricNo: enrollment.students?.matric_number || "N/A",
+            courseId: enrollment.course_id,
+            name: fullName,
+            matricNo: matricValue,
             course: courseCodeById.get(enrollment.course_id) || "N/A",
             totalSessions,
             attendedSessions,
@@ -134,24 +157,36 @@ function LecturerRiskMonitor() {
     };
   }, []);
 
-  const handleSendAlert = async (studentId, name, course, alertKey = studentId) => {
+  const handleSendAlert = async (
+    studentId,
+    courseId,
+    name,
+    course,
+    attendance,
+    alertKey = studentId,
+  ) => {
     try {
-      setAlertSent((prev) => ({ ...prev, [alertKey]: true }));
+      const riskLabel = attendance < 60 ? "At Risk" : "Warning";
 
-      // Optional: Log alert event in Supabase alerts table if present
-      await supabase.from("notifications").insert([
+      // Safe insert targeting only fundamental columns
+      const { error } = await supabase.from("warnings").insert([
         {
-          user_id: studentId,
-          title: "Attendance Warning",
-          message: `Your attendance in ${course} is below threshold. Please review your attendance record.`,
-          created_at: new Date().toISOString(),
+          student_id: studentId,
+          course_id: courseId,
+          message: `[${riskLabel}] Your attendance in ${course} is currently at ${attendance}%, which falls below the required threshold. Please improve your attendance.`,
         },
       ]);
 
-      alert(`Alert notification sent to ${name}!`);
+      if (error) {
+        console.error("Supabase detailed insert error:", error);
+        throw error;
+      }
+
+      setAlertSent((prev) => ({ ...prev, [alertKey]: true }));
+      alert(`Warning alert sent and saved for ${name}!`);
     } catch (err) {
-      console.warn("Notification table not configured or failed to insert:", err);
-      alert(`Alert notification sent to ${name}!`);
+      console.error("Failed to insert warning record:", err);
+      alert(`Failed to save alert for ${name}. Check console for details.`);
     }
   };
 
@@ -229,7 +264,8 @@ function LecturerRiskMonitor() {
               </h1>
 
               <p className="mt-1 text-sm text-text-secondary">
-                Identify and contact students falling behind attendance thresholds.
+                Identify and contact students falling behind attendance
+                thresholds.
               </p>
             </div>
           </div>
@@ -238,7 +274,9 @@ function LecturerRiskMonitor() {
           <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-3">
             {/* At Risk Card */}
             <div className="rounded-2xl border border-red-200 bg-red-50/50 p-5 text-center">
-              <p className="text-2xl font-bold text-red-600">{metrics.atRisk}</p>
+              <p className="text-2xl font-bold text-red-600">
+                {metrics.atRisk}
+              </p>
               <p className="mt-1 text-xs font-semibold text-red-600">
                 At Risk (below 60%)
               </p>
@@ -246,7 +284,9 @@ function LecturerRiskMonitor() {
 
             {/* Warning Card */}
             <div className="rounded-2xl border border-amber-200 bg-amber-50/50 p-5 text-center">
-              <p className="text-2xl font-bold text-amber-600">{metrics.warning}</p>
+              <p className="text-2xl font-bold text-amber-600">
+                {metrics.warning}
+              </p>
               <p className="mt-1 text-xs font-semibold text-amber-600">
                 Warning (60 - 75%)
               </p>
@@ -284,7 +324,7 @@ function LecturerRiskMonitor() {
                   No student records found for your courses.
                 </div>
               ) : (
-                <table className="w-full min-w-[750px] text-left">
+                <table className="w-full min-w-187.5 text-left">
                   <thead className="border-b border-border bg-background/50">
                     <tr>
                       <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-text-secondary">
@@ -358,8 +398,10 @@ function LecturerRiskMonitor() {
                               onClick={() =>
                                 handleSendAlert(
                                   student.studentId,
+                                  student.courseId,
                                   student.name,
                                   student.course,
+                                  student.attendance,
                                   student.id,
                                 )
                               }

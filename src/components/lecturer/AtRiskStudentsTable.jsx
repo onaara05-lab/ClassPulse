@@ -3,6 +3,9 @@ import { Link } from "react-router-dom";
 import { AlertTriangle, Eye, Loader2 } from "lucide-react";
 import { supabase } from "../../supabaseClient";
 
+const normalizeAttendanceStatus = (value) =>
+  String(value ?? "").trim().toLowerCase();
+
 function AtRiskStudentsTable() {
   const [atRiskStudents, setAtRiskStudents] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -10,6 +13,104 @@ function AtRiskStudentsTable() {
 
   useEffect(() => {
     let isMounted = true;
+
+    async function resolveLecturerCourseIds(user) {
+      const { data: profileData, error: profileError } = await supabase
+        .from("profiles")
+        .select("full_name")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (profileError) {
+        console.warn("Profile fallback lookup failed:", profileError.message);
+      }
+
+      const candidateNames = [
+        profileData?.full_name,
+        user.user_metadata?.full_name,
+        user.user_metadata?.name,
+        user.email?.split("@")[0],
+      ]
+        .map((value) => value?.trim())
+        .filter(Boolean);
+
+      const { data: lecturerCourses = [], error: directCoursesError } =
+        await supabase.from("courses").select("id").eq("lecturer_id", user.id);
+
+      if (directCoursesError) {
+        console.warn(
+          "Direct lecturer course lookup failed:",
+          directCoursesError.message,
+        );
+      }
+
+      let courseIds = [
+        ...new Set((lecturerCourses || []).map((course) => course.id)),
+      ];
+
+      for (const candidateName of [...new Set(candidateNames)]) {
+        if (courseIds.length > 0) break;
+
+        const { data: namedCourses = [], error: namedCoursesError } =
+          await supabase
+            .from("courses")
+            .select("id")
+            .eq("lecturer_name", candidateName);
+
+        if (namedCoursesError) {
+          console.warn(
+            "Fallback lecturer-name lookup failed:",
+            namedCoursesError.message,
+          );
+          continue;
+        }
+
+        courseIds = [
+          ...new Set([
+            ...courseIds,
+            ...namedCourses.map((course) => course.id),
+          ]),
+        ];
+      }
+
+      if (courseIds.length === 0) {
+        const { data: openSessions = [], error: openSessionError } =
+          await supabase
+            .from("class_sessions")
+            .select("course_id, courses ( lecturer_id, lecturer_name )")
+            .eq("attendance_open", true);
+
+        if (openSessionError) {
+          console.warn(
+            "Open-session fallback lookup failed:",
+            openSessionError.message,
+          );
+        }
+
+        const candidateSet = new Set(
+          candidateNames.map((name) => name.toLowerCase()),
+        );
+        courseIds = [
+          ...new Set(
+            (openSessions || [])
+              .filter((session) => {
+                const course = session.courses;
+                if (!course) return false;
+
+                return (
+                  course.lecturer_id === user.id ||
+                  (course.lecturer_name &&
+                    candidateSet.has(course.lecturer_name.toLowerCase()))
+                );
+              })
+              .map((session) => session.course_id)
+              .filter(Boolean),
+          ),
+        ];
+      }
+
+      return [...new Set(courseIds)];
+    }
 
     async function fetchAtRiskStudents() {
       try {
@@ -24,11 +125,21 @@ function AtRiskStudentsTable() {
         if (userError) throw userError;
         if (!user) throw new Error("No authenticated user.");
 
+        const courseIds = await resolveLecturerCourseIds(user);
+
+        if (!courseIds || courseIds.length === 0) {
+          if (isMounted) {
+            setAtRiskStudents([]);
+            setLoading(false);
+          }
+          return;
+        }
+
         // 2. Get courses taught by this lecturer
         const { data: courses, error: coursesErr } = await supabase
           .from("courses")
           .select("id, course_code")
-          .eq("lecturer_id", user.id);
+          .in("id", courseIds);
 
         if (coursesErr) throw coursesErr;
 
@@ -40,7 +151,7 @@ function AtRiskStudentsTable() {
           return;
         }
 
-        const courseIds = courses.map((c) => c.id);
+        const resolvedCourseIds = courses.map((c) => c.id);
 
         // Map course IDs to codes for display
         const courseCodeMap = {};
@@ -51,7 +162,8 @@ function AtRiskStudentsTable() {
         // 3. Fetch enrollments along with student details
         const { data: enrollments, error: enrollmentsErr } = await supabase
           .from("enrollments")
-          .select(`
+          .select(
+            `
             course_id,
             student_id,
             students:student_id (
@@ -59,8 +171,9 @@ function AtRiskStudentsTable() {
               full_name,
               matric_number
             )
-          `)
-          .in("course_id", courseIds);
+          `,
+          )
+          .in("course_id", resolvedCourseIds);
 
         if (enrollmentsErr) throw enrollmentsErr;
 
@@ -76,14 +189,15 @@ function AtRiskStudentsTable() {
         const { data: sessions, error: sessionsErr } = await supabase
           .from("class_sessions")
           .select("id, course_id")
-          .in("course_id", courseIds);
+          .in("course_id", resolvedCourseIds);
 
         if (sessionsErr) throw sessionsErr;
 
         const sessionsByCourse = {};
         const sessionToCourseMap = {};
         sessions?.forEach((s) => {
-          sessionsByCourse[s.course_id] = (sessionsByCourse[s.course_id] || 0) + 1;
+          sessionsByCourse[s.course_id] =
+            (sessionsByCourse[s.course_id] || 0) + 1;
           sessionToCourseMap[s.id] = s.course_id;
         });
 
@@ -93,17 +207,24 @@ function AtRiskStudentsTable() {
         const { data: records, error: recordsErr } = await supabase
           .from("attendance_records")
           .select("class_session_id, student_id, status")
-          .in("class_session_id", sessionIds)
-          .eq("status", "present");
+          .in("class_session_id", sessionIds);
 
         if (recordsErr) throw recordsErr;
 
-        // Key: "studentId_courseId" -> count present
+        // Key: "studentId_courseId" -> count unique attended sessions
         const presentCountMap = {};
-        records?.forEach((r) => {
-          const courseId = sessionToCourseMap[r.class_session_id];
-          const key = `${r.student_id}_${courseId}`;
-          presentCountMap[key] = (presentCountMap[key] || 0) + 1;
+        const seenAttendance = new Set();
+        records?.forEach((record) => {
+          const status = normalizeAttendanceStatus(record.status);
+          if (status !== "present" && status !== "late") return;
+
+          const courseId = sessionToCourseMap[record.class_session_id];
+          const key = `${record.student_id}_${courseId}_${record.class_session_id}`;
+          if (seenAttendance.has(key)) return;
+          seenAttendance.add(key);
+
+          const studentKey = `${record.student_id}_${courseId}`;
+          presentCountMap[studentKey] = (presentCountMap[studentKey] || 0) + 1;
         });
 
         // 6. Aggregate student attendance per course and identify at-risk students (< 75%)
@@ -119,7 +240,9 @@ function AtRiskStudentsTable() {
           const key = `${e.student_id}_${e.course_id}`;
           const presentSessions = presentCountMap[key] || 0;
           const sessionsMissed = Math.max(0, totalSessions - presentSessions);
-          const attendancePercentage = Math.round((presentSessions / totalSessions) * 100);
+          const attendancePercentage = Math.round(
+            (presentSessions / totalSessions) * 100,
+          );
 
           // Threshold check: At risk if attendance is below 75%
           if (attendancePercentage < 75) {
@@ -151,9 +274,11 @@ function AtRiskStudentsTable() {
     }
 
     fetchAtRiskStudents();
+    const refreshId = window.setInterval(fetchAtRiskStudents, 8000);
 
     return () => {
       isMounted = false;
+      window.clearInterval(refreshId);
     };
   }, []);
 
@@ -195,13 +320,14 @@ function AtRiskStudentsTable() {
         </div>
       ) : atRiskStudents.length === 0 ? (
         <div className="p-8 text-center text-sm text-text-secondary">
-          🎉 No students are currently at risk! All enrolled students are maintaining regular attendance.
+          🎉 No students are currently at risk! All enrolled students are
+          maintaining regular attendance.
         </div>
       ) : (
         <>
           {/* Responsive Table Wrapper */}
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[700px] text-left">
+            <table className="w-full min-w-175 text-left">
               <thead className="bg-background">
                 <tr>
                   <th className="px-5 py-4 text-xs font-semibold uppercase tracking-wide text-text-secondary">
@@ -232,7 +358,10 @@ function AtRiskStudentsTable() {
 
               <tbody className="divide-y divide-border">
                 {atRiskStudents.map((student) => (
-                  <tr key={student.id} className="transition hover:bg-background">
+                  <tr
+                    key={student.id}
+                    className="transition hover:bg-background"
+                  >
                     {/* Student Information */}
                     <td className="px-5 py-4">
                       <div>
@@ -289,7 +418,9 @@ function AtRiskStudentsTable() {
           {/* Table Footer */}
           <div className="border-t border-border px-5 py-4">
             <p className="text-xs text-text-secondary">
-              Showing {atRiskStudents.length} {atRiskStudents.length === 1 ? "student" : "students"} requiring attention.
+              Showing {atRiskStudents.length}{" "}
+              {atRiskStudents.length === 1 ? "student" : "students"} requiring
+              attention.
             </p>
           </div>
         </>

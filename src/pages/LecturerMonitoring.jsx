@@ -5,6 +5,11 @@ import logo from "../assets/classpulse-logo.png";
 import LecturerSidebar from "../components/lecturer/LecturerSidebar";
 import { supabase } from "../supabaseClient";
 
+const normalizeAttendanceStatus = (value) =>
+  String(value ?? "")
+    .trim()
+    .toLowerCase();
+
 function LecturerMonitoring() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [monitoringData, setMonitoringData] = useState([]);
@@ -28,11 +33,88 @@ function LecturerMonitoring() {
         if (userError) throw userError;
         if (!user) throw new Error("No authenticated user found.");
 
-        // 2. Get courses assigned to the lecturer
+        const resolveLecturerCourseIds = async () => {
+          const { data: profileData, error: profileError } = await supabase
+            .from("profiles")
+            .select("full_name")
+            .eq("id", user.id)
+            .maybeSingle();
+
+          if (profileError) {
+            console.warn(
+              "Profile fallback lookup failed:",
+              profileError.message,
+            );
+          }
+
+          const candidateNames = [
+            profileData?.full_name,
+            user.user_metadata?.full_name,
+            user.user_metadata?.name,
+            user.email?.split("@")[0],
+          ]
+            .map((value) => value?.trim())
+            .filter(Boolean);
+
+          const { data: lecturerCourses = [], error: directCoursesError } =
+            await supabase
+              .from("courses")
+              .select("id, course_code, course_name")
+              .eq("lecturer_id", user.id);
+
+          if (directCoursesError) {
+            console.warn(
+              "Direct lecturer course lookup failed:",
+              directCoursesError.message,
+            );
+          }
+
+          let courseIds = [
+            ...new Set((lecturerCourses || []).map((course) => course.id)),
+          ];
+
+          for (const candidateName of [...new Set(candidateNames)]) {
+            if (courseIds.length > 0) break;
+
+            const { data: namedCourses = [], error: namedCoursesError } =
+              await supabase
+                .from("courses")
+                .select("id, course_code, course_name")
+                .eq("lecturer_name", candidateName);
+
+            if (namedCoursesError) {
+              console.warn(
+                "Fallback lecturer-name lookup failed:",
+                namedCoursesError.message,
+              );
+              continue;
+            }
+
+            courseIds = [
+              ...new Set([
+                ...courseIds,
+                ...namedCourses.map((course) => course.id),
+              ]),
+            ];
+          }
+
+          return [...new Set(courseIds)];
+        };
+
+        const courseIds = await resolveLecturerCourseIds();
+
+        if (!courseIds || courseIds.length === 0) {
+          if (isMounted) {
+            setMonitoringData([]);
+            setLoading(false);
+          }
+          return;
+        }
+
         const { data: rawCourses, error: coursesError } = await supabase
           .from("courses")
           .select("id, course_code, course_name")
-          .eq("lecturer_id", user.id);
+          .in("id", courseIds);
 
         if (coursesError) throw coursesError;
 
@@ -44,23 +126,41 @@ function LecturerMonitoring() {
           return;
         }
 
-        const courseIds = rawCourses.map((c) => c.id);
+        // 3. Fetch enrollments with robust fallback across table and column names
+        let enrollments = [];
+        const enrollmentTables = [
+          "enrollments",
+          "course_registrations",
+          "course_students",
+        ];
 
-        // 3. Fetch enrollments for these courses
-        const { data: enrollments, error: enrollmentsError } = await supabase
-          .from("enrollments")
-          .select("course_id, student_id")
-          .in("course_id", courseIds);
+        for (const tableName of enrollmentTables) {
+          try {
+            const { data, error } = await supabase
+              .from(tableName)
+              .select("*")
+              .in("course_id", courseIds);
 
-        if (enrollmentsError) throw enrollmentsError;
+            if (!error && data && data.length > 0) {
+              enrollments = data;
+              break;
+            }
+          } catch (e) {
+            console.warn(`Table ${tableName} lookup skipped:`, e.message);
+          }
+        }
 
-        // Group enrolled students by course
+        // Group enrolled students by course supporting various foreign key names
         const studentsByCourse = {};
         enrollments?.forEach((e) => {
-          if (!studentsByCourse[e.course_id]) {
-            studentsByCourse[e.course_id] = new Set();
+          const courseId = e.course_id;
+          const studentId = e.student_id || e.user_id || e.profile_id;
+          if (courseId && studentId) {
+            if (!studentsByCourse[courseId]) {
+              studentsByCourse[courseId] = new Set();
+            }
+            studentsByCourse[courseId].add(studentId);
           }
-          studentsByCourse[e.course_id].add(e.student_id);
         });
 
         // 4. Fetch class sessions held per course
@@ -74,30 +174,42 @@ function LecturerMonitoring() {
         const sessionsByCourse = {};
         const sessionToCourseMap = {};
         sessions?.forEach((s) => {
-          sessionsByCourse[s.course_id] = (sessionsByCourse[s.course_id] || 0) + 1;
+          sessionsByCourse[s.course_id] =
+            (sessionsByCourse[s.course_id] || 0) + 1;
           sessionToCourseMap[s.id] = s.course_id;
         });
 
         const sessionIds = sessions?.map((s) => s.id) || [];
 
         // 5. Fetch present records across sessions
-        let attendanceMap = {}; // Key: "studentId_courseId" -> count present
-        let totalPresentByCourse = {}; // Key: courseId -> count total present
+        let attendanceMap = {};
+        let totalPresentByCourse = {};
 
         if (sessionIds.length > 0) {
           const { data: records, error: recordsError } = await supabase
             .from("attendance_records")
-            .select("class_session_id, student_id")
-            .in("class_session_id", sessionIds)
-            .eq("status", "present");
+            .select("class_session_id, student_id, status")
+            .in("class_session_id", sessionIds);
 
           if (recordsError) throw recordsError;
 
+          const seenAttendance = new Set();
           records?.forEach((r) => {
+            const status = normalizeAttendanceStatus(r.status);
+            if (status !== "present" && status !== "late") return;
+
+            const studentId = r.student_id;
             const courseId = sessionToCourseMap[r.class_session_id];
-            const key = `${r.student_id}_${courseId}`;
-            attendanceMap[key] = (attendanceMap[key] || 0) + 1;
-            totalPresentByCourse[courseId] = (totalPresentByCourse[courseId] || 0) + 1;
+            if (!studentId || !courseId) return;
+
+            const key = `${studentId}_${courseId}_${r.class_session_id}`;
+            if (seenAttendance.has(key)) return;
+            seenAttendance.add(key);
+
+            const studentKey = `${studentId}_${courseId}`;
+            attendanceMap[studentKey] = (attendanceMap[studentKey] || 0) + 1;
+            totalPresentByCourse[courseId] =
+              (totalPresentByCourse[courseId] || 0) + 1;
           });
         }
 
@@ -122,7 +234,8 @@ function LecturerMonitoring() {
             enrolledStudentsSet.forEach((studentId) => {
               const key = `${studentId}_${courseId}`;
               const studentPresentCount = attendanceMap[key] || 0;
-              const studentPercentage = (studentPresentCount / totalSessions) * 100;
+              const studentPercentage =
+                (studentPresentCount / totalSessions) * 100;
               if (studentPercentage < 75) {
                 atRiskCount += 1;
               }
@@ -170,7 +283,7 @@ function LecturerMonitoring() {
 
       {/* Main Content Area */}
       <div className="flex flex-col min-w-0 lg:ml-64 min-h-screen">
-        {/* Mobile Header Bar - Logo & Sidebar Trigger */}
+        {/* Mobile Header Bar */}
         <div className="flex h-16 items-center justify-between border-b border-border bg-surface px-4 lg:hidden">
           <div className="flex items-center gap-3">
             <button
@@ -182,7 +295,6 @@ function LecturerMonitoring() {
               <Menu size={22} />
             </button>
 
-            {/* Mobile Logo Group */}
             <div className="flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600">
                 <img
@@ -200,7 +312,6 @@ function LecturerMonitoring() {
 
         {/* Main Content */}
         <main className="p-4 sm:p-6 lg:p-8 flex-1">
-          {/* Page Header */}
           <div className="mb-6 flex items-center gap-3">
             <div>
               <h1 className="text-xl font-bold text-text-primary sm:text-2xl">
@@ -208,12 +319,12 @@ function LecturerMonitoring() {
               </h1>
 
               <p className="mt-1 text-sm text-text-secondary">
-                Track course performance metrics and monitor students needing assistance.
+                Track course performance metrics and monitor students needing
+                assistance.
               </p>
             </div>
           </div>
 
-          {/* Loading State */}
           {loading ? (
             <div className="flex items-center justify-center py-20 text-text-secondary">
               <Loader2 className="mr-2 h-6 w-6 animate-spin text-primary" />
@@ -225,13 +336,15 @@ function LecturerMonitoring() {
             </div>
           ) : monitoringData.length === 0 ? (
             <div className="rounded-2xl border border-border bg-surface p-12 text-center text-text-secondary">
-              <p className="text-base font-semibold text-text-primary">No active courses found</p>
+              <p className="text-base font-semibold text-text-primary">
+                No active courses found
+              </p>
               <p className="mt-1 text-sm">
-                Courses assigned to you will appear here with live attendance analytics.
+                Courses assigned to you will appear here with live attendance
+                analytics.
               </p>
             </div>
           ) : (
-            /* Monitoring Cards Grid */
             <section className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
               {monitoringData.map((course) => {
                 const attendanceIsLow = course.attendance < 80;
@@ -241,7 +354,6 @@ function LecturerMonitoring() {
                     key={course.id}
                     className="rounded-2xl border border-border bg-surface p-5 shadow-sm transition hover:shadow-md"
                   >
-                    {/* Card Header */}
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <h2 className="text-base font-bold text-text-primary sm:text-lg">
@@ -264,14 +376,11 @@ function LecturerMonitoring() {
                       </span>
                     </div>
 
-                    {/* Attendance Progress Bar */}
                     <div className="mt-5">
                       <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
                         <div
                           className={`h-full rounded-full ${
-                            attendanceIsLow
-                              ? "bg-amber-500"
-                              : "bg-emerald-500"
+                            attendanceIsLow ? "bg-amber-500" : "bg-emerald-500"
                           }`}
                           style={{
                             width: `${course.attendance}%`,
@@ -280,9 +389,7 @@ function LecturerMonitoring() {
                       </div>
                     </div>
 
-                    {/* Metrics Section */}
                     <div className="mt-6 grid grid-cols-3 gap-2">
-                      {/* Students */}
                       <div className="rounded-xl bg-background/60 p-3 text-center">
                         <p className="text-base font-bold text-text-primary sm:text-lg">
                           {course.students}
@@ -292,7 +399,6 @@ function LecturerMonitoring() {
                         </p>
                       </div>
 
-                      {/* Sessions */}
                       <div className="rounded-xl bg-background/60 p-3 text-center">
                         <p className="text-base font-bold text-text-primary sm:text-lg">
                           {course.sessions}
@@ -302,7 +408,6 @@ function LecturerMonitoring() {
                         </p>
                       </div>
 
-                      {/* At Risk */}
                       <div className="rounded-xl bg-red-50 p-3 text-center">
                         <p className="text-base font-bold text-red-600 sm:text-lg">
                           {course.atRisk}

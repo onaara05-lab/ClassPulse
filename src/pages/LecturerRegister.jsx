@@ -4,6 +4,77 @@ import { LuEye, LuEyeOff } from "react-icons/lu";
 import logo from "../assets/classpulse-logo.png";
 import { supabase } from "../supabaseClient";
 
+const AAUA_FACULTIES_AND_DEPARTMENTS = {
+  Science: [
+    "Computer Science",
+    "Microbiology",
+    "Plant Science and Biotechnology",
+    "Animal and Environmental Biology",
+    "Biochemistry",
+    "Chemistry",
+    "Industrial Chemistry",
+    "Physics and Electronics",
+    "Mathematics",
+    "Statistics",
+    "Geology",
+  ],
+  Computing: [
+    "Cyber Security",
+    "Software Engineering",
+    "Information Technology",
+    "Computer Science",
+  ],
+  "Administration and Management Sciences": [
+    "Accounting",
+    "Banking and Finance",
+    "Business Administration",
+    "Marketing",
+    "Public Administration",
+  ],
+  "Social Sciences": [
+    "Economics",
+    "Political Science",
+    "Sociology",
+    "Geography",
+    "Mass Communication",
+    "Psychology",
+  ],
+  Education: [
+    "Educational Management",
+    "Guidance and Counselling",
+    "Arts Education",
+    "Science Education",
+    "Social Science Education",
+    "Human Kinetics and Health Education",
+  ],
+  Arts: [
+    "English Studies",
+    "History and International Studies",
+    "Linguistics and Yoruba",
+    "Philosophy and Religious Studies",
+    "Theatre Arts",
+  ],
+  Law: ["Civil Law"],
+  Agriculture: [
+    "Agricultural Economics and Extension",
+    "Animal Science",
+    "Crop Science",
+    "Soil Science",
+    "Fisheries and Aquaculture",
+  ],
+  "Allied Health Sciences": [
+    "Nursing Science",
+    "Medical Laboratory Science",
+    "Physiotherapy",
+  ],
+  "Environmental Designs": [
+    "Architecture",
+    "Estate Management",
+    "Surveying and Geoinformatics",
+    "Urban and Regional Planning",
+  ],
+};
+
 function LecturerRegister() {
   const navigate = useNavigate();
 
@@ -26,13 +97,25 @@ function LecturerRegister() {
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
+  const availableDepartments = formData.faculty
+    ? AAUA_FACULTIES_AND_DEPARTMENTS[formData.faculty] || []
+    : [];
+
   const handleChange = (event) => {
     const { name, value } = event.target;
 
-    setFormData((previousData) => ({
-      ...previousData,
-      [name]: value,
-    }));
+    if (name === "faculty") {
+      setFormData((previousData) => ({
+        ...previousData,
+        faculty: value,
+        department: "",
+      }));
+    } else {
+      setFormData((previousData) => ({
+        ...previousData,
+        [name]: value,
+      }));
+    }
   };
 
   const handleSubmit = async (event) => {
@@ -52,48 +135,47 @@ function LecturerRegister() {
     try {
       setLoading(true);
 
-      // Sign up user with metadata (The Database trigger handles profiles table insert)
-      // Sign up user with metadata (The Database trigger handles profiles table insert)
-    const { data: authData, error: authError } = await supabase.auth.signUp({
-      email: formData.email.trim(),
-      password: formData.password,
-      options: {
-        data: {
-          full_name: formData.fullName.trim(),
-          staff_id: formData.staffId.trim(),
-          faculty: formData.faculty.trim(),
-          department: formData.department.trim(),
-          academic_session: formData.academicSession,
-          semester: formData.semester,
-          courses_taught_count: formData.coursesTaughtCount,
-          role: "lecturer",
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: formData.email.trim(),
+        password: formData.password,
+        options: {
+          data: {
+            full_name: formData.fullName.trim(),
+            staff_id: formData.staffId.trim(),
+            faculty: formData.faculty.trim(),
+            department: formData.department.trim(),
+            academic_session: formData.academicSession,
+            semester: formData.semester,
+            courses_taught_count: formData.coursesTaughtCount,
+            role: "lecturer",
+          },
         },
-      },
-    });
+      });
 
-    if (authError) throw authError;
+      if (authError) throw authError;
 
-    // Check if session exists or email confirmation is required
-    if (authData?.session) {
-      alert("Lecturer account created successfully!");
-    } else {
-      alert("Registration successful! Please check your email to confirm your account.");
-    }
+      if (authData?.session) {
+        alert("Lecturer account created successfully!");
+        navigate("/lecturer/dashboard");
+      } else {
+        alert(
+          "Registration successful! Please check your email to confirm your account.",
+        );
+        navigate("/login");
+      }
 
-    setFormData({
-      fullName: "",
-      staffId: "",
-      email: "",
-      faculty: "",
-      department: "",
-      academicSession: "2025/2026",
-      semester: "First Semester",
-      coursesTaughtCount: "1",
-      password: "",
-      confirmPassword: "",
-    });
-
-    navigate("/login");
+      setFormData({
+        fullName: "",
+        staffId: "",
+        email: "",
+        faculty: "",
+        department: "",
+        academicSession: "2025/2026",
+        semester: "First Semester",
+        coursesTaughtCount: "1",
+        password: "",
+        confirmPassword: "",
+      });
     } catch (error) {
       console.error("Registration error:", error);
       setErrorMessage(
@@ -106,7 +188,6 @@ function LecturerRegister() {
 
   return (
     <main className="min-h-screen bg-background px-6 py-6 font-inter">
-      {/* Logo */}
       <div className="mx-auto mb-5 max-w-md">
         <Link to="/">
           <img
@@ -117,27 +198,21 @@ function LecturerRegister() {
         </Link>
       </div>
 
-      {/* Registration Card */}
       <div className="mx-auto max-w-md rounded-2xl border border-border bg-surface p-8 shadow-sm">
-        {/* Heading */}
         <div className="mb-6 text-center">
           <h1 className="text-3xl font-bold text-text-primary">
             Create your account
           </h1>
-
           <p className="mt-2 text-sm text-text-secondary">
             Join ClassPulse and start managing attendance smarter.
           </p>
         </div>
 
-        {/* Registration Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Role Switcher */}
           <div>
             <label className="mb-2 block text-sm font-medium text-text-primary">
               Register As
             </label>
-
             <div className="grid grid-cols-2 gap-3">
               <Link
                 to="/register"
@@ -145,7 +220,6 @@ function LecturerRegister() {
               >
                 Student
               </Link>
-
               <button
                 type="button"
                 onClick={() => setRole("lecturer")}
@@ -161,7 +235,6 @@ function LecturerRegister() {
           </div>
 
           <div id="lecturer" className="space-y-4">
-            {/* Full Name */}
             <div>
               <label
                 htmlFor="fullName"
@@ -169,7 +242,6 @@ function LecturerRegister() {
               >
                 Full Name
               </label>
-
               <input
                 id="fullName"
                 name="fullName"
@@ -182,7 +254,6 @@ function LecturerRegister() {
               />
             </div>
 
-            {/* Staff ID */}
             <div>
               <label
                 htmlFor="staffId"
@@ -190,7 +261,6 @@ function LecturerRegister() {
               >
                 Staff ID
               </label>
-
               <input
                 id="staffId"
                 name="staffId"
@@ -203,7 +273,6 @@ function LecturerRegister() {
               />
             </div>
 
-            {/* Email Address */}
             <div>
               <label
                 htmlFor="email"
@@ -211,7 +280,6 @@ function LecturerRegister() {
               >
                 Email Address
               </label>
-
               <input
                 id="email"
                 name="email"
@@ -224,7 +292,6 @@ function LecturerRegister() {
               />
             </div>
 
-            {/* Faculty & Department Row */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <label
@@ -233,16 +300,23 @@ function LecturerRegister() {
                 >
                   Faculty
                 </label>
-                <input
+                <select
                   id="faculty"
                   name="faculty"
-                  type="text"
                   value={formData.faculty}
                   onChange={handleChange}
-                  placeholder="e.g. Science"
-                  className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-sm text-text-primary outline-none transition placeholder:text-text-secondary focus:border-primary focus:ring-2 focus:ring-primary/10"
+                  className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-sm text-text-primary outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/10"
                   required
-                />
+                >
+                  <option value="">Select Faculty</option>
+                  {Object.keys(AAUA_FACULTIES_AND_DEPARTMENTS).map(
+                    (facultyName) => (
+                      <option key={facultyName} value={facultyName}>
+                        {facultyName}
+                      </option>
+                    ),
+                  )}
+                </select>
               </div>
 
               <div>
@@ -252,20 +326,29 @@ function LecturerRegister() {
                 >
                   Department
                 </label>
-                <input
+                <select
                   id="department"
                   name="department"
-                  type="text"
                   value={formData.department}
                   onChange={handleChange}
-                  placeholder="e.g. Computer Sci"
-                  className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-sm text-text-primary outline-none transition placeholder:text-text-secondary focus:border-primary focus:ring-2 focus:ring-primary/10"
+                  disabled={!formData.faculty}
+                  className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-sm text-text-primary outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/10 disabled:opacity-50"
                   required
-                />
+                >
+                  <option value="">
+                    {formData.faculty
+                      ? "Select Department"
+                      : "Select faculty first"}
+                  </option>
+                  {availableDepartments.map((dept) => (
+                    <option key={dept} value={dept}>
+                      {dept}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 
-            {/* Academic Session & Semester Row */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <label
@@ -309,7 +392,6 @@ function LecturerRegister() {
               </div>
             </div>
 
-            {/* Courses to be Taught */}
             <div>
               <label
                 htmlFor="coursesTaughtCount"
@@ -317,7 +399,6 @@ function LecturerRegister() {
               >
                 Number of Courses to be Taught
               </label>
-
               <select
                 id="coursesTaughtCount"
                 name="coursesTaughtCount"
@@ -335,7 +416,6 @@ function LecturerRegister() {
               </select>
             </div>
 
-            {/* Password */}
             <div>
               <label
                 htmlFor="password"
@@ -343,7 +423,6 @@ function LecturerRegister() {
               >
                 Password
               </label>
-
               <div className="relative">
                 <input
                   id="password"
@@ -370,7 +449,6 @@ function LecturerRegister() {
               </div>
             </div>
 
-            {/* Confirm Password */}
             <div>
               <label
                 htmlFor="confirmPassword"
@@ -378,7 +456,6 @@ function LecturerRegister() {
               >
                 Confirm Password
               </label>
-
               <div className="relative">
                 <input
                   id="confirmPassword"
@@ -406,14 +483,12 @@ function LecturerRegister() {
             </div>
           </div>
 
-          {/* Error Message */}
           {errorMessage && (
             <p className="rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">
               {errorMessage}
             </p>
           )}
 
-          {/* Submit Button */}
           <button
             type="submit"
             disabled={loading}
@@ -423,7 +498,6 @@ function LecturerRegister() {
           </button>
         </form>
 
-        {/* Login Link */}
         <p className="mt-6 text-center text-sm text-text-secondary">
           Already have an account?{" "}
           <Link

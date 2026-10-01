@@ -18,12 +18,17 @@ function StudentSidebar({ isOpen, onClose }) {
   const navigationLinks = [
     {
       name: "Dashboard",
-      path: "/student-dashboard",
+      path: "/student/dashboard",
       icon: LuLayoutDashboard,
     },
     {
-      name: "Courses",
-      path: "/student/courses",
+      name: "Course Registration",
+      path: "/student/coursesReg", 
+      icon: LuBookOpen,
+    },
+    {
+      name: "My Courses",
+      path: "/student/my-courses",
       icon: LuBookOpen,
     },
     {

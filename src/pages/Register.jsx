@@ -4,6 +4,78 @@ import logo from "../assets/classpulse-logo.png";
 import { supabase } from "../supabaseClient";
 import { LuEye, LuEyeOff } from "react-icons/lu";
 
+// AAUA Official Faculties and Departments Mapping
+const AAUA_FACULTIES_AND_DEPARTMENTS = {
+  Science: [
+    "Computer Science",
+    "Microbiology",
+    "Plant Science and Biotechnology",
+    "Animal and Environmental Biology",
+    "Biochemistry",
+    "Chemistry",
+    "Industrial Chemistry",
+    "Physics and Electronics",
+    "Mathematics",
+    "Statistics",
+    "Geology",
+  ],
+  Computing: [
+    "Cyber Security",
+    "Software Engineering",
+    "Information Technology",
+    "Computer Science",
+  ],
+  "Administration and Management Sciences": [
+    "Accounting",
+    "Banking and Finance",
+    "Business Administration",
+    "Marketing",
+    "Public Administration",
+  ],
+  "Social Sciences": [
+    "Economics",
+    "Political Science",
+    "Sociology",
+    "Geography",
+    "Mass Communication",
+    "Psychology",
+  ],
+  Education: [
+    "Educational Management",
+    "Guidance and Counselling",
+    "Arts Education",
+    "Science Education",
+    "Social Science Education",
+    "Human Kinetics and Health Education",
+  ],
+  Arts: [
+    "English Studies",
+    "History and International Studies",
+    "Linguistics and Yoruba",
+    "Philosophy and Religious Studies",
+    "Theatre Arts",
+  ],
+  Law: ["Civil Law"],
+  Agriculture: [
+    "Agricultural Economics and Extension",
+    "Animal Science",
+    "Crop Science",
+    "Soil Science",
+    "Fisheries and Aquaculture",
+  ],
+  "Allied Health Sciences": [
+    "Nursing Science",
+    "Medical Laboratory Science",
+    "Physiotherapy",
+  ],
+  "Environmental Designs": [
+    "Architecture",
+    "Estate Management",
+    "Surveying and Geoinformatics",
+    "Urban and Regional Planning",
+  ],
+};
+
 function Register() {
   const navigate = useNavigate();
   const [formData, setFormData] = useState({
@@ -25,13 +97,27 @@ function Register() {
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
+  // Get available departments based on currently selected faculty
+  const availableDepartments = formData.faculty
+    ? AAUA_FACULTIES_AND_DEPARTMENTS[formData.faculty] || []
+    : [];
+
   const handleChange = (e) => {
     const { name, value } = e.target;
 
-    setFormData((previousData) => ({
-      ...previousData,
-      [name]: value,
-    }));
+    if (name === "faculty") {
+      // If faculty changes, update faculty and reset department selection
+      setFormData((previousData) => ({
+        ...previousData,
+        faculty: value,
+        department: "",
+      }));
+    } else {
+      setFormData((previousData) => ({
+        ...previousData,
+        [name]: value,
+      }));
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -54,7 +140,7 @@ function Register() {
     try {
       setLoading(true);
 
-      // 1. Create account in Supabase Auth & pass metadata for the database trigger
+      // 1. Create account in Supabase Auth & pass metadata matching the database columns
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: formData.email,
         password: formData.password,
@@ -80,7 +166,7 @@ function Register() {
 
       // 2. Handle session / confirmation redirect
       if (authData.session) {
-        navigate("/student-dashboard");
+        navigate("/student/dashboard");
       } else {
         alert(
           "Registration successful! Please check your email to verify your account before logging in.",
@@ -158,7 +244,7 @@ function Register() {
 
               {/* Lecturer */}
               <Link
-                to="/LecturerRegister"
+                to="/lecturer/register"
                 className="rounded-lg border border-border bg-surface px-4 py-3 text-center text-sm font-semibold text-text-secondary transition hover:border-primary"
               >
                 Lecturer
@@ -238,16 +324,23 @@ function Register() {
                 >
                   Faculty
                 </label>
-                <input
+                <select
                   id="faculty"
                   name="faculty"
-                  type="text"
                   value={formData.faculty}
                   onChange={handleChange}
-                  placeholder="e.g. Science"
-                  className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-sm text-text-primary outline-none transition placeholder:text-text-secondary focus:border-primary focus:ring-2 focus:ring-primary/10"
+                  className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-sm text-text-primary outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/10"
                   required
-                />
+                >
+                  <option value="">Select Faculty</option>
+                  {Object.keys(AAUA_FACULTIES_AND_DEPARTMENTS).map(
+                    (facultyName) => (
+                      <option key={facultyName} value={facultyName}>
+                        {facultyName}
+                      </option>
+                    ),
+                  )}
+                </select>
               </div>
 
               {/* Department */}
@@ -258,16 +351,26 @@ function Register() {
                 >
                   Department
                 </label>
-                <input
+                <select
                   id="department"
                   name="department"
-                  type="text"
                   value={formData.department}
                   onChange={handleChange}
-                  placeholder="e.g. Computer Sci"
-                  className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-sm text-text-primary outline-none transition placeholder:text-text-secondary focus:border-primary focus:ring-2 focus:ring-primary/10"
+                  disabled={!formData.faculty}
+                  className="w-full rounded-lg border border-border bg-surface px-4 py-3 text-sm text-text-primary outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/10 disabled:opacity-50"
                   required
-                />
+                >
+                  <option value="">
+                    {formData.faculty
+                      ? "Select Department"
+                      : "Select faculty first"}
+                  </option>
+                  {availableDepartments.map((dept) => (
+                    <option key={dept} value={dept}>
+                      {dept}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 

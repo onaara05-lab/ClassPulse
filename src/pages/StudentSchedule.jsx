@@ -1,10 +1,17 @@
 import { useState, useEffect, useCallback } from "react";
-import { LuClock, LuMenu, LuLoader, LuCalendar } from "react-icons/lu";
+import { LuMenu, LuLoader, LuCalendar } from "react-icons/lu";
 import StudentSidebar from "../components/Student/StudentSidebar";
 import logo from "../assets/classpulse-logo.png";
 import { supabase } from "../supabaseClient";
 
 const DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+
+const formatDisplayTime = (time) => {
+  if (!time) return "";
+  const [hours, minutes] = time.split(":");
+  const hour = Number(hours);
+  return `${hour % 12 || 12}:${minutes} ${hour >= 12 ? "PM" : "AM"}`;
+};
 
 function StudentSchedule() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -44,6 +51,7 @@ function StudentSchedule() {
           start_time,
           end_time,
           venue,
+          lecturer_name,
           courses (
             course_code,
             course_name
@@ -67,7 +75,8 @@ function StudentSchedule() {
               id: item.id,
               course: course?.course_code || "N/A",
               courseTitle: course?.course_name || "",
-              time: `${item.start_time} - ${item.end_time}`,
+              lecturerName: item.lecturer_name || "Lecturer not assigned",
+              time: `${formatDisplayTime(item.start_time)} - ${formatDisplayTime(item.end_time)}`,
               location: item.venue || "TBA",
             };
           });
@@ -103,12 +112,12 @@ function StudentSchedule() {
       {/* Main Container */}
       <div className="flex min-h-screen min-w-0 flex-col lg:ml-64">
         {/* Mobile Top Header Bar */}
-        <div className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 lg:hidden">
+        <div className="flex h-16 items-center justify-between border-b border-border bg-surface px-4 lg:hidden">
           <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={() => setIsSidebarOpen(true)}
-              className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+              className="rounded-lg p-2 text-text-secondary hover:bg-background hover:text-text-primary"
               aria-label="Open sidebar"
             >
               <LuMenu size={22} />
@@ -123,7 +132,7 @@ function StudentSchedule() {
                   className="h-14 w-auto object-contain sm:h-16"
                 />
               </div>
-              <span className="text-lg font-bold tracking-tight text-slate-900">
+              <span className="text-lg font-bold text-text-primary">
                 ClassPulse
               </span>
             </div>
@@ -146,36 +155,34 @@ function StudentSchedule() {
               <p className="text-sm font-medium">Loading schedule...</p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
               {schedule.map((dayGroup) => (
                 <div
                   key={dayGroup.day}
-                  className="rounded-2xl border border-border bg-surface p-5 shadow-sm"
+                  className="rounded-xl border border-border bg-surface p-3.5 shadow-sm"
                 >
                   {/* Day Title */}
-                  <h2 className="border-b border-border/60 pb-3 text-sm font-semibold text-text-primary">
+                  <h2 className="border-b border-border pb-3 text-sm font-semibold text-text-primary">
                     {dayGroup.day}
                   </h2>
 
                   {/* Classes List */}
-                  <div className="mt-4 space-y-4">
+                  <div className="mt-3 space-y-2">
                     {dayGroup.classes.length === 0 ? (
-                      <div className="flex items-center gap-2 py-2 text-xs text-slate-400">
+                      <div className="flex items-center gap-2 py-2 text-xs text-text-secondary">
                         <LuCalendar className="h-4 w-4" />
                         <span>No classes scheduled</span>
                       </div>
                     ) : (
                       dayGroup.classes.map((cls) => (
-                        <div key={cls.id} className="flex items-start gap-3">
-                          <LuClock className="mt-0.5 h-4 w-4 shrink-0 text-text-secondary" />
-                          <div>
-                            <p className="text-sm font-semibold text-text-primary">
-                              {cls.course}
-                            </p>
-                            <p className="mt-0.5 text-xs text-text-secondary">
-                              {cls.time} | {cls.location}
-                            </p>
-                          </div>
+                        <div key={cls.id} className="rounded-lg border border-blue-200 bg-blue-50 p-3">
+                          <h3 className="text-sm font-semibold text-blue-700">{cls.course}</h3>
+                          {cls.courseTitle && <p className="mt-0.5 text-xs text-blue-700">{cls.courseTitle}</p>}
+                          <p className="mt-1 text-xs font-medium text-blue-600">{cls.time}</p>
+                          <p className="mt-1 text-xs text-blue-600">{cls.location}</p>
+                          <p className="mt-1 text-[11px] font-semibold text-blue-800">
+                            Lecturer: {cls.lecturerName}
+                          </p>
                         </div>
                       ))
                     )}

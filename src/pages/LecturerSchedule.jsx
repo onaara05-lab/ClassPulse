@@ -7,9 +7,18 @@ import { supabase } from "../supabaseClient";
 
 const DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
+const buildEmptyWeeklySchedule = () =>
+  DAYS_OF_WEEK.map((day) => ({ day, classes: [] }));
+
+const getMinutesFromTime = (time) => {
+  if (!time) return 0;
+  const [hours, minutes] = time.split(":").map(Number);
+  return hours * 60 + minutes;
+};
+
 function LecturerSchedule() {
   const [weeklySchedule, setWeeklySchedule] = useState(
-    DAYS_OF_WEEK.map((day) => ({ day, classes: [] })),
+    buildEmptyWeeklySchedule(),
   );
   const [availableCourses, setAvailableCourses] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -19,6 +28,9 @@ function LecturerSchedule() {
 
   const [formData, setFormData] = useState({
     courseId: "",
+    department: "",
+    level: "",
+    lecturerName: "",
     day: "",
     startTime: "",
     endTime: "",
@@ -28,7 +40,6 @@ function LecturerSchedule() {
 
   const [error, setError] = useState("");
 
-  // 1. Helper function defined first
   const formatDisplayTime = (timeStr) => {
     if (!timeStr) return "";
     const [hours, minutes] = timeStr.split(":");
@@ -38,7 +49,6 @@ function LecturerSchedule() {
     return `${formattedHour}:${minutes} ${period}`;
   };
 
-  // 2. Wrapped in useCallback to satisfy React hooks dependency rules
   const fetchScheduleData = useCallback(async () => {
     try {
       setLoading(true);
@@ -52,22 +62,124 @@ function LecturerSchedule() {
       }
 
       // 1. Fetch lecturer's assigned courses
-      const { data: coursesData, error: coursesError } = await supabase
-        .from("courses")
-        .select("id, course_code, course_name")
-        .eq("lecturer_id", user.id);
+      let courses = [];
 
-      if (coursesError) throw coursesError;
-      const courses = (coursesData || []).map((course) => ({
-        id: course.id,
-        code: course.course_code,
-        title: course.course_name,
-      }));
+      const resolveLecturerCourseIds = async () => {
+        const { data: profileData, error: profileError } = await supabase
+          .from("profiles")
+          .select("full_name")
+          .eq("id", user.id)
+          .maybeSingle();
+
+        if (profileError) {
+          console.warn("Profile fallback lookup failed:", profileError.message);
+        }
+
+        const candidateNames = [
+          profileData?.full_name,
+          user.user_metadata?.full_name,
+          user.user_metadata?.name,
+          user.email?.split("@")[0],
+        ]
+          .map((value) => value?.trim())
+          .filter(Boolean);
+
+        const { data: lecturerCourses = [], error: directCoursesError } =
+          await supabase
+            .from("courses")
+            .select(
+              "id, course_code, course_name, department, level, lecturer_name",
+            )
+            .eq("lecturer_id", user.id);
+
+        if (directCoursesError) {
+          console.warn(
+            "Direct lecturer course lookup failed:",
+            directCoursesError.message,
+          );
+        }
+
+        let courseIds = [
+          ...new Set((lecturerCourses || []).map((course) => course.id)),
+        ];
+
+        for (const candidateName of [...new Set(candidateNames)]) {
+          if (courseIds.length > 0) break;
+
+          const { data: namedCourses = [], error: namedCoursesError } =
+            await supabase
+              .from("courses")
+              .select(
+                "id, course_code, course_name, department, level, lecturer_name",
+              )
+              .eq("lecturer_name", candidateName);
+
+          if (namedCoursesError) {
+            console.warn(
+              "Fallback lecturer-name lookup failed:",
+              namedCoursesError.message,
+            );
+            continue;
+          }
+
+          courseIds = [
+            ...new Set([
+              ...courseIds,
+              ...namedCourses.map((course) => course.id),
+            ]),
+          ];
+        }
+
+        const { data: coursesData = [], error: coursesError } =
+          courseIds.length > 0
+            ? await supabase
+                .from("courses")
+                .select(
+                  "id, course_code, course_name, department, level, lecturer_name",
+                )
+                .in("id", courseIds)
+            : { data: [], error: null };
+
+        if (coursesError) throw coursesError;
+
+        return (coursesData || []).map((course) => ({
+          id: course.id,
+          code: course.course_code,
+          title: course.course_name,
+          department: course.department,
+          level: course.level,
+          lecturerName: course.lecturer_name || "",
+        }));
+      };
+
+      courses = await resolveLecturerCourseIds();
+
+      if (courses.length === 0) {
+        const { data: fallbackCourses, error: fallbackError } = await supabase
+          .from("courses")
+          .select(
+            "id, course_code, course_name, department, level, lecturer_name",
+          )
+          .order("course_code", { ascending: true });
+
+        if (!fallbackError && fallbackCourses && fallbackCourses.length > 0) {
+          courses = fallbackCourses.map((course) => ({
+            id: course.id,
+            code: course.course_code,
+            title: course.course_name,
+            department: course.department,
+            level: course.level,
+            lecturerName: course.lecturer_name || "",
+          }));
+        }
+      }
+
       setAvailableCourses(courses);
 
       const courseIds = courses.map((course) => course.id);
 
       if (courseIds.length === 0) {
+        setWeeklySchedule(buildEmptyWeeklySchedule());
         setLoading(false);
         return;
       }
@@ -83,25 +195,40 @@ function LecturerSchedule() {
           end_time,
           venue,
           student_count,
-          courses (id, course_code)
+          department,
+          level,
+          lecturer_name,
+          courses (id, course_code, course_name)
         `,
         )
-        .in("course_id", courseIds);
+        .in("course_id", courseIds)
+        .order("start_time", { ascending: true });
 
       if (scheduleError) throw scheduleError;
 
       // Format schedule items for the UI grid
       const formattedSchedule = DAYS_OF_WEEK.map((day) => {
         const dayClasses = (scheduleData || [])
-          .filter((item) => item.day.toLowerCase() === day.toLowerCase())
+          .filter(
+            (item) => item.day && item.day.toLowerCase() === day.toLowerCase(),
+          )
+          .sort(
+            (a, b) =>
+              getMinutesFromTime(a.start_time) -
+              getMinutesFromTime(b.start_time),
+          )
           .map((item) => ({
             id: item.id,
             course: item.courses?.course_code || "N/A",
+            courseTitle: item.courses?.course_name || "",
             time: `${formatDisplayTime(item.start_time)} - ${formatDisplayTime(
               item.end_time,
             )}`,
             venue: item.venue || "TBD",
             students: item.student_count || 0,
+            department: item.department || "N/A",
+            level: item.level || "N/A",
+            lecturerName: item.lecturer_name || "Not specified",
           }));
 
         return {
@@ -128,10 +255,20 @@ function LecturerSchedule() {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setFormData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
+    setFormData((prev) => {
+      const updated = { ...prev, [name]: value };
+
+      // Auto-populate department, level, and lecturer name if course is selected
+      if (name === "courseId") {
+        const selectedCourse = availableCourses.find((c) => c.id === value);
+        if (selectedCourse) {
+          updated.department = selectedCourse.department || "";
+          updated.level = selectedCourse.level || "";
+          updated.lecturerName = selectedCourse.lecturerName || "";
+        }
+      }
+      return updated;
+    });
   };
 
   const handleSubmit = async (e) => {
@@ -139,6 +276,9 @@ function LecturerSchedule() {
 
     if (
       !formData.courseId ||
+      !formData.department ||
+      !formData.level ||
+      !formData.lecturerName ||
       !formData.day ||
       !formData.startTime ||
       !formData.endTime ||
@@ -161,6 +301,9 @@ function LecturerSchedule() {
       const { error: insertError } = await supabase.from("schedules").insert([
         {
           course_id: formData.courseId,
+          department: formData.department,
+          level: formData.level,
+          lecturer_name: formData.lecturerName,
           day: formData.day,
           start_time: formData.startTime,
           end_time: formData.endTime,
@@ -177,6 +320,9 @@ function LecturerSchedule() {
       // Reset Form State
       setFormData({
         courseId: "",
+        department: "",
+        level: "",
+        lecturerName: "",
         day: "",
         startTime: "",
         endTime: "",
@@ -203,7 +349,7 @@ function LecturerSchedule() {
 
       {/* Main Content Area */}
       <div className="flex min-h-screen min-w-0 flex-col lg:ml-64">
-        {/* Mobile Header Bar - Logo & Sidebar Trigger */}
+        {/* Mobile Header Bar */}
         <div className="flex h-16 items-center justify-between border-b border-border bg-surface px-4 lg:hidden">
           <div className="flex items-center gap-3">
             <button
@@ -215,7 +361,6 @@ function LecturerSchedule() {
               <Menu size={22} />
             </button>
 
-            {/* Mobile Logo Group */}
             <div className="flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600">
                 <img
@@ -233,7 +378,6 @@ function LecturerSchedule() {
 
         {/* Main Content */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8">
-          {/* Page Header */}
           <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <h1 className="text-xl font-bold text-text-primary sm:text-2xl">
               Class Schedule
@@ -252,7 +396,6 @@ function LecturerSchedule() {
             </button>
           </div>
 
-          {/* Weekly Schedule Grid */}
           {loading ? (
             <div className="flex items-center justify-center py-20 text-text-secondary">
               <Loader2 size={24} className="mr-2 animate-spin" />
@@ -265,36 +408,51 @@ function LecturerSchedule() {
                   key={day.day}
                   className="rounded-xl border border-border bg-surface p-3.5 shadow-sm"
                 >
-                  {/* Day Header */}
                   <div className="border-b border-border pb-3">
                     <h2 className="text-sm font-semibold text-text-primary">
                       {day.day}
                     </h2>
                   </div>
 
-                  {/* Classes List */}
                   <div className="mt-3 space-y-2">
                     {day.classes.length === 0 ? (
-                      <p className="py-2 text-xs text-text-secondary">
-                        No classes scheduled
-                      </p>
+                      <div className="flex items-center gap-2 py-2 text-xs text-text-secondary">
+                        <CalendarDays size={14} />
+                        <span>No classes scheduled</span>
+                      </div>
                     ) : (
                       day.classes.map((classItem) => (
                         <div
                           key={classItem.id}
                           className="rounded-lg border border-blue-200 bg-blue-50 p-3"
                         >
-                          <h3 className="text-sm font-semibold text-blue-700">
-                            {classItem.course}
-                          </h3>
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <h3 className="text-sm font-semibold text-blue-700">
+                                {classItem.course}
+                              </h3>
+                              {classItem.courseTitle && (
+                                <p className="mt-0.5 text-[11px] text-blue-700/80">
+                                  {classItem.courseTitle}
+                                </p>
+                              )}
+                            </div>
+                            <span className="rounded bg-blue-200 px-1.5 py-0.5 text-[10px] font-bold text-blue-800">
+                              {classItem.department} ({classItem.level})
+                            </span>
+                          </div>
 
-                          <p className="mt-1 text-xs font-medium text-blue-600">
+                          <p className="mt-2 text-xs font-medium text-blue-600">
                             {classItem.time}
                           </p>
 
                           <p className="mt-1 text-xs text-blue-600">
                             {classItem.venue} | {classItem.students} students
                           </p>
+
+                          <div className="mt-2 border-t border-blue-200/80 pt-1.5 text-[11px] font-semibold text-blue-800">
+                            Lecturer: {classItem.lecturerName}
+                          </div>
                         </div>
                       ))
                     )}
@@ -310,15 +468,13 @@ function LecturerSchedule() {
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-surface p-6 shadow-xl scrollbar-none">
-            {/* Modal Header */}
             <div className="mb-6 flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-bold text-text-primary">
                   Schedule New Class
                 </h2>
-
                 <p className="mt-1 text-sm text-text-secondary">
-                  Add a class to your weekly schedule.
+                  Add a class to your weekly schedule for student views.
                 </p>
               </div>
 
@@ -331,14 +487,12 @@ function LecturerSchedule() {
               </button>
             </div>
 
-            {/* Form */}
             <form onSubmit={handleSubmit} className="space-y-4">
               {/* Course Selector */}
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-text-primary">
-                Course
-              </label>
-
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-text-primary">
+                  Course
+                </label>
                 <select
                   name="courseId"
                   value={formData.courseId}
@@ -354,9 +508,60 @@ function LecturerSchedule() {
                 </select>
                 {!loading && availableCourses.length === 0 && (
                   <p className="mt-1.5 text-xs text-text-secondary">
-                    No courses are assigned to your lecturer account yet.
+                    No courses are assigned to this lecturer yet. Create one
+                    from the Courses page first.
                   </p>
                 )}
+              </div>
+
+              {/* Department Input */}
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-text-primary">
+                  Department
+                </label>
+                <input
+                  type="text"
+                  name="department"
+                  value={formData.department}
+                  onChange={handleChange}
+                  placeholder="e.g. Computer Science"
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
+                />
+              </div>
+
+              {/* Level Selector */}
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-text-primary">
+                  Level
+                </label>
+                <select
+                  name="level"
+                  value={formData.level}
+                  onChange={handleChange}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
+                >
+                  <option value="">Select level</option>
+                  <option value="100">100 Level</option>
+                  <option value="200">200 Level</option>
+                  <option value="300">300 Level</option>
+                  <option value="400">400 Level</option>
+                  <option value="500">500 Level</option>
+                </select>
+              </div>
+
+              {/* Lecturer Name Input */}
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-text-primary">
+                  Lecturer Name
+                </label>
+                <input
+                  type="text"
+                  name="lecturerName"
+                  value={formData.lecturerName}
+                  onChange={handleChange}
+                  placeholder="e.g. Dr. John Doe"
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
+                />
               </div>
 
               {/* Day Selector */}
@@ -364,7 +569,6 @@ function LecturerSchedule() {
                 <label className="mb-1.5 block text-sm font-medium text-text-primary">
                   Day
                 </label>
-
                 <select
                   name="day"
                   value={formData.day}
@@ -386,7 +590,6 @@ function LecturerSchedule() {
                   <label className="mb-1.5 block text-sm font-medium text-text-primary">
                     Start Time
                   </label>
-
                   <input
                     type="time"
                     name="startTime"
@@ -400,7 +603,6 @@ function LecturerSchedule() {
                   <label className="mb-1.5 block text-sm font-medium text-text-primary">
                     End Time
                   </label>
-
                   <input
                     type="time"
                     name="endTime"
@@ -416,7 +618,6 @@ function LecturerSchedule() {
                 <label className="mb-1.5 block text-sm font-medium text-text-primary">
                   Venue
                 </label>
-
                 <input
                   type="text"
                   name="venue"
@@ -432,7 +633,6 @@ function LecturerSchedule() {
                 <label className="mb-1.5 block text-sm font-medium text-text-primary">
                   Number of Students
                 </label>
-
                 <input
                   type="number"
                   name="students"

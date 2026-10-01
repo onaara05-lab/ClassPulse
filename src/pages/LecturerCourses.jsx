@@ -4,6 +4,9 @@ import logo from "../assets/classpulse-logo.png";
 import LecturerSidebar from "../components/lecturer/LecturerSidebar";
 import { supabase } from "../supabaseClient";
 
+const normalizeAttendanceStatus = (value) =>
+  String(value ?? "").trim().toLowerCase();
+
 function LecturerCourses() {
   const [courses, setCourses] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -16,14 +19,78 @@ function LecturerCourses() {
   const [formData, setFormData] = useState({
     code: "",
     title: "",
+    department: "",
+    level: "100 Level",
+    totalStudents: "",
   });
 
   useEffect(() => {
     let isMounted = true;
 
+    async function resolveLecturerCourseIds(user) {
+      const { data: lecturerCourses = [], error: directCoursesError } =
+        await supabase.from("courses").select("id").eq("lecturer_id", user.id);
+
+      if (directCoursesError) {
+        console.warn(
+          "Direct lecturer course lookup failed:",
+          directCoursesError.message,
+        );
+      }
+
+      let courseIds = [
+        ...new Set((lecturerCourses || []).map((course) => course.id)),
+      ];
+
+      if (courseIds.length === 0) {
+        const { data: profileData, error: profileError } = await supabase
+          .from("profiles")
+          .select("full_name")
+          .eq("id", user.id)
+          .maybeSingle();
+
+        if (profileError) {
+          console.warn("Profile fallback lookup failed:", profileError.message);
+        }
+
+        const candidateNames = [
+          profileData?.full_name,
+          user.user_metadata?.full_name,
+          user.user_metadata?.name,
+          user.email?.split("@")[0],
+        ].filter(Boolean);
+
+        for (const candidateName of [...new Set(candidateNames)]) {
+          const { data: namedCourses = [], error: namedCoursesError } =
+            await supabase
+              .from("courses")
+              .select("id")
+              .eq("lecturer_name", candidateName);
+
+          if (namedCoursesError) {
+            console.warn(
+              "Fallback lecturer-name lookup failed:",
+              namedCoursesError.message,
+            );
+            continue;
+          }
+
+          courseIds = [
+            ...new Set([
+              ...courseIds,
+              ...namedCourses.map((course) => course.id),
+            ]),
+          ];
+
+          if (courseIds.length > 0) break;
+        }
+      }
+
+      return [...new Set(courseIds)];
+    }
+
     async function fetchCoursesData() {
       try {
-        setLoading(true);
         setError(null);
 
         // 1. Get current logged-in lecturer
@@ -35,11 +102,21 @@ function LecturerCourses() {
         if (userError) throw userError;
         if (!user) throw new Error("No authenticated user found.");
 
-        // 2. Fetch courses created by this lecturer
+        const courseIds = await resolveLecturerCourseIds(user);
+
+        if (!courseIds || courseIds.length === 0) {
+          if (isMounted) {
+            setCourses([]);
+            setLoading(false);
+          }
+          return;
+        }
+
+        // 2. Fetch courses created by this lecturer (including total_students)
         const { data: rawCourses, error: coursesError } = await supabase
           .from("courses")
-          .select("id, course_code, course_name")
-          .eq("lecturer_id", user.id);
+          .select("id, course_code, course_name, department, level, total_students")
+          .in("id", courseIds);
 
         if (coursesError) throw coursesError;
 
@@ -51,26 +128,26 @@ function LecturerCourses() {
           return;
         }
 
-        const courseIds = rawCourses.map((c) => c.id);
+        const resolvedCourseIds = rawCourses.map((c) => c.id);
 
         // 3. Fetch count of enrolled students per course
         const { data: enrollments, error: enrollmentsError } = await supabase
           .from("enrollments")
           .select("course_id, student_id")
-          .in("course_id", courseIds);
+          .in("course_id", resolvedCourseIds);
 
         if (enrollmentsError) throw enrollmentsError;
 
-        const studentCounts = {};
+        const enrollmentCounts = {};
         enrollments?.forEach((e) => {
-          studentCounts[e.course_id] = (studentCounts[e.course_id] || 0) + 1;
+          enrollmentCounts[e.course_id] = (enrollmentCounts[e.course_id] || 0) + 1;
         });
 
         // 4. Fetch class sessions held per course
         const { data: sessions, error: sessionsError } = await supabase
           .from("class_sessions")
           .select("id, course_id")
-          .in("course_id", courseIds);
+          .in("course_id", resolvedCourseIds);
 
         if (sessionsError) throw sessionsError;
 
@@ -88,35 +165,45 @@ function LecturerCourses() {
         if (sessionIds.length > 0) {
           const { data: records, error: recordsError } = await supabase
             .from("attendance_records")
-            .select("class_session_id")
-            .in("class_session_id", sessionIds)
-            .eq("status", "present");
+            .select("class_session_id, student_id, status")
+            .in("class_session_id", sessionIds);
 
           if (recordsError) throw recordsError;
 
-          records?.forEach((r) => {
-            const courseId = sessionToCourseMap[r.class_session_id];
+          const seenAttendance = new Set();
+          records?.forEach((record) => {
+            const status = normalizeAttendanceStatus(record.status);
+            if (status !== "present" && status !== "late") return;
+
+            const courseId = sessionToCourseMap[record.class_session_id];
+            const uniqueKey = `${courseId}_${record.class_session_id}_${record.student_id}`;
+            if (seenAttendance.has(uniqueKey)) return;
+            seenAttendance.add(uniqueKey);
+
             attendanceMap[courseId] = (attendanceMap[courseId] || 0) + 1;
           });
         }
 
         // 6. Aggregate metrics per course
         const computedCourses = rawCourses.map((c) => {
-          const studentCount = studentCounts[c.id] || 0;
+          const studentCount = c.total_students ?? enrollmentCounts[c.id] ?? 0;
           const sessionCount = sessionCounts[c.id] || 0;
           const totalPresentRecords = attendanceMap[c.id] || 0;
 
-          // Attendance Avg % = Total Present / (Total Students * Total Sessions)
           const totalPossibleAttendance = studentCount * sessionCount;
           const attendance =
             totalPossibleAttendance > 0
-              ? Math.round((totalPresentRecords / totalPossibleAttendance) * 100)
+              ? Math.round(
+                  (totalPresentRecords / totalPossibleAttendance) * 100,
+                )
               : 0;
 
           return {
             id: c.id,
             code: c.course_code,
             title: c.course_name,
+            department: c.department,
+            level: c.level,
             attendance,
             students: studentCount,
             sessions: sessionCount,
@@ -136,10 +223,42 @@ function LecturerCourses() {
       }
     }
 
+    // Initial load
     fetchCoursesData();
+
+    // Setup Supabase Realtime listener
+    const channel = supabase
+      .channel("lecturer-courses-realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "enrollments" },
+        () => {
+          fetchCoursesData();
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "courses" },
+        () => {
+          fetchCoursesData();
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "class_sessions" },
+        () => {
+          fetchCoursesData();
+        }
+      )
+      .subscribe();
+
+    // Fallback polling interval
+    const refreshId = window.setInterval(fetchCoursesData, 15000);
 
     return () => {
       isMounted = false;
+      window.clearInterval(refreshId);
+      supabase.removeChannel(channel);
     };
   }, []);
 
@@ -166,14 +285,35 @@ function LecturerCourses() {
       if (userError) throw userError;
       if (!user) throw new Error("User authentication context missing.");
 
-      // Insert new course into Supabase
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("full_name")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (profileError && profileError.code !== "PGRST116") {
+        throw profileError;
+      }
+
+      const lecturerName =
+        profile?.full_name ||
+        user.user_metadata?.full_name ||
+        user.user_metadata?.name ||
+        user.email?.split("@")[0] ||
+        "Lecturer";
+
+      // Insert new course into Supabase including total_students
       const { data, error: insertError } = await supabase
         .from("courses")
         .insert([
           {
             course_code: formData.code.trim(),
             course_name: formData.title.trim(),
+            department: formData.department.trim(),
+            level: formData.level,
+            total_students: formData.totalStudents ? parseInt(formData.totalStudents, 10) : 0,
             lecturer_id: user.id,
+            lecturer_name: lecturerName,
           },
         ])
         .select()
@@ -185,8 +325,10 @@ function LecturerCourses() {
         id: data.id,
         code: data.course_code,
         title: data.course_name,
+        department: data.department,
+        level: data.level,
         attendance: 0,
-        students: 0,
+        students: data.total_students ?? 0,
         sessions: 0,
       };
 
@@ -195,6 +337,9 @@ function LecturerCourses() {
       setFormData({
         code: "",
         title: "",
+        department: "",
+        level: "100 Level",
+        totalStudents: "",
       });
 
       setIsModalOpen(false);
@@ -282,7 +427,9 @@ function LecturerCourses() {
             </div>
           ) : courses.length === 0 ? (
             <div className="rounded-2xl border border-border bg-surface p-12 text-center text-text-secondary">
-              <p className="text-base font-semibold text-text-primary">No courses found</p>
+              <p className="text-base font-semibold text-text-primary">
+                No courses found
+              </p>
               <p className="mt-1 text-sm">
                 Click "Add Course" above to create your first course.
               </p>
@@ -307,6 +454,9 @@ function LecturerCourses() {
 
                         <p className="mt-1 text-xs leading-5 text-text-secondary sm:text-sm">
                           {course.title}
+                        </p>
+                        <p className="mt-2 text-xs text-text-secondary">
+                          {course.department} · {course.level}
                         </p>
                       </div>
 
@@ -416,6 +566,78 @@ function LecturerCourses() {
                   value={formData.title}
                   onChange={handleChange}
                   required
+                  disabled={submitting}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="department"
+                  className="mb-1.5 block text-sm font-medium text-text-primary"
+                >
+                  Department
+                </label>
+                <input
+                  id="department"
+                  name="department"
+                  type="text"
+                  placeholder="e.g. Computer Science"
+                  value={formData.department}
+                  onChange={handleChange}
+                  required
+                  disabled={submitting}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="level"
+                  className="mb-1.5 block text-sm font-medium text-text-primary"
+                >
+                  Student Level
+                </label>
+                <select
+                  id="level"
+                  name="level"
+                  value={formData.level}
+                  onChange={handleChange}
+                  required
+                  disabled={submitting}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
+                >
+                  {[
+                    "100 Level",
+                    "200 Level",
+                    "300 Level",
+                    "400 Level",
+                    "500 Level",
+                    "600 Level",
+                  ].map((level) => (
+                    <option key={level} value={level}>
+                      {level}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Number of Students */}
+              <div>
+                <label
+                  htmlFor="totalStudents"
+                  className="mb-1.5 block text-sm font-medium text-text-primary"
+                >
+                  Number of Students
+                </label>
+                <input
+                  id="totalStudents"
+                  name="totalStudents"
+                  type="number"
+                  min="0"
+                  placeholder="e.g. 50"
+                  value={formData.totalStudents}
+                  onChange={handleChange}
                   disabled={submitting}
                   className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
                 />

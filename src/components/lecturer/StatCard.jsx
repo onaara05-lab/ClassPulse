@@ -5,11 +5,16 @@ import {
   LuTriangleAlert,
 } from "react-icons/lu";
 
-function StatisticsCards({ stats, loading = false, atRiskCount = 0 }) {
+function StatisticsCards({ stats = {}, loading = false, atRiskCount = 0 }) {
+  // Fallback calculations / safe formatting
+  const totalCourses = stats?.totalCourses ?? 0;
+  const totalStudents = stats?.totalStudents ?? 0;
+  const attendanceRate = stats?.overallAttendanceRate ?? 0;
+
   const cards = [
     {
       title: "Total Courses",
-      value: loading ? "..." : (stats?.totalCourses ?? 0).toString(),
+      value: loading ? "..." : totalCourses.toString(),
       description: "Courses assigned to you",
       icon: LuBookOpen,
       iconBg: "bg-blue-100",
@@ -17,7 +22,7 @@ function StatisticsCards({ stats, loading = false, atRiskCount = 0 }) {
     },
     {
       title: "Total Students",
-      value: loading ? "..." : (stats?.totalStudents ?? 0).toString(),
+      value: loading ? "..." : totalStudents.toString(),
       description: "Students across your courses",
       icon: LuUsers,
       iconBg: "bg-purple-100",
@@ -25,7 +30,7 @@ function StatisticsCards({ stats, loading = false, atRiskCount = 0 }) {
     },
     {
       title: "Attendance Rate",
-      value: loading ? "..." : `${stats?.overallAttendanceRate ?? 0}%`,
+      value: loading ? "..." : `${Math.min(100, Math.max(0, attendanceRate))}%`,
       description: "Average attendance rate",
       icon: LuClipboardCheck,
       iconBg: "bg-green-100",

@@ -5,6 +5,36 @@ import StudentSidebar from "../components/Student/StudentSidebar";
 import logo from "../assets/classpulse-logo.png";
 import { supabase } from "../supabaseClient";
 
+const normalizeValue = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase();
+const normalizeLevel = (value) => {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase();
+  const match = raw.match(/(\d{1,3})/);
+  return match ? match[1] : raw.replace(/\s*level\s*/g, "").replace(/\s+/g, "");
+};
+
+const matchesStudentContext = (course, student) => {
+  if (!student) return true;
+
+  const hasDepartment = Boolean(student.department);
+  const hasLevel = Boolean(student.level);
+
+  if (!hasDepartment && !hasLevel) return true;
+
+  const departmentMatches =
+    !hasDepartment ||
+    normalizeValue(course.department) === normalizeValue(student.department);
+
+  const levelMatches =
+    !hasLevel || normalizeLevel(course.level) === normalizeLevel(student.level);
+
+  return departmentMatches && levelMatches;
+};
+
 function StudentCourses() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [courses, setCourses] = useState([]);
@@ -17,7 +47,7 @@ function StudentCourses() {
       setLoading(true);
       setError("");
 
-      // 1. Get currently authenticated student
+      // 1. Get authenticated student
       const {
         data: { user },
         error: userError,
@@ -25,24 +55,46 @@ function StudentCourses() {
 
       if (userError || !user) throw userError || new Error("User not found");
 
-      // 2. Load lecturer-created courses and identify this student's enrollments.
-      const { data: coursesData, error: coursesError } = await supabase
-        .from("courses")
-        .select("id, course_code, course_name")
-        .order("course_code", { ascending: true });
+      // Fetch student profile for department and level, but do not block the page if one is missing.
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("department, level")
+        .eq("id", user.id)
+        .maybeSingle();
 
-      if (coursesError) throw coursesError;
+      if (profileError) throw profileError;
 
-      const { data: enrollmentData, error: enrollmentError } = await supabase
-        .from("enrollments")
-        .select("course_id")
-        .eq("student_id", user.id);
+      const department =
+        profile?.department || user.user_metadata?.department || "";
+      const level = profile?.level || user.user_metadata?.level || "";
+      const resolvedStudent = { department, level };
 
-      if (enrollmentError) throw enrollmentError;
+      // 2. Load all courses and include any course that matches the student's context or is already enrolled.
+      const [coursesResult, enrollmentResult] = await Promise.all([
+        supabase
+          .from("courses")
+          .select("id, course_code, course_name, department, level")
+          .order("course_code", { ascending: true }),
+        supabase
+          .from("enrollments")
+          .select("course_id")
+          .eq("student_id", user.id),
+      ]);
+
+      if (coursesResult.error) throw coursesResult.error;
+      if (enrollmentResult.error) throw enrollmentResult.error;
+
       const enrolledCourseIds = new Set(
-        (enrollmentData || []).map((enrollment) => enrollment.course_id),
+        (enrollmentResult.data || []).map((enrollment) => enrollment.course_id),
       );
-      const courseIds = [...enrolledCourseIds];
+
+      const filteredCourses = (coursesResult.data || []).filter(
+        (course) =>
+          enrolledCourseIds.has(course.id) ||
+          matchesStudentContext(course, resolvedStudent),
+      );
+
+      const courseIds = filteredCourses.map((course) => course.id);
 
       const { data: sessionsData, error: sessionsError } =
         courseIds.length > 0
@@ -63,7 +115,7 @@ function StudentCourses() {
       if (attendanceError) throw attendanceError;
 
       // 4. Calculate attendance percentage and breakdown per course
-      const processedCourses = (coursesData || []).map((course) => {
+      const processedCourses = filteredCourses.map((course) => {
         const isEnrolled = enrolledCourseIds.has(course.id);
         const courseSessionIds = (sessionsData || [])
           .filter((session) => session.course_id === course.id)
@@ -162,12 +214,12 @@ function StudentCourses() {
       {/* Main Container */}
       <div className="flex min-h-screen min-w-0 flex-col lg:ml-64">
         {/* Mobile Top Header Bar */}
-        <div className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 lg:hidden">
+        <div className="flex h-16 items-center justify-between border-b border-border bg-surface px-4 lg:hidden">
           <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={() => setIsSidebarOpen(true)}
-              className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+              className="rounded-lg p-2 text-text-secondary hover:bg-background hover:text-text-primary"
               aria-label="Open sidebar"
             >
               <LuMenu size={22} />
@@ -182,7 +234,7 @@ function StudentCourses() {
                   className="h-14 w-auto object-contain sm:h-16"
                 />
               </div>
-              <span className="text-lg font-bold tracking-tight text-slate-900">
+              <span className="text-lg font-bold text-text-primary">
                 ClassPulse
               </span>
             </div>
@@ -192,7 +244,7 @@ function StudentCourses() {
         {/* Main Content */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8">
           {/* Header */}
-          <div className="mb-6 flex items-center justify-between">
+          <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <h1 className="text-xl font-bold text-text-primary sm:text-2xl">
               Courses
             </h1>
@@ -206,24 +258,26 @@ function StudentCourses() {
 
           {/* Courses Grid or State Views */}
           {loading ? (
-            <div className="flex flex-col items-center justify-center py-20 text-slate-500">
-              <LuLoader className="mb-3 h-8 w-8 animate-spin text-blue-600" />
-              <p className="text-sm font-medium">Loading courses...</p>
+            <div className="flex items-center justify-center py-20 text-text-secondary">
+              <LuLoader className="mr-2 h-6 w-6 animate-spin text-primary" />
+              <p className="text-sm">Loading courses...</p>
             </div>
           ) : courses.length === 0 ? (
             <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-surface py-16 text-center">
               <LuBookOpen className="mb-3 h-10 w-10 text-slate-400" />
-              <p className="font-semibold text-text-primary">No courses found</p>
+              <p className="font-semibold text-text-primary">
+                No courses found
+              </p>
               <p className="mt-1 text-xs text-text-secondary">
-                No lecturer-created courses are available yet.
+                No courses match your department and level yet.
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
               {courses.map((course) => (
                 <div
                   key={course.id}
-                  className="rounded-2xl border border-border bg-surface p-6 shadow-sm transition hover:shadow-md"
+                  className="rounded-xl border border-border bg-surface p-4 shadow-sm transition hover:shadow-md"
                 >
                   {/* Course Header */}
                   <div className="flex items-start justify-between">
@@ -231,7 +285,7 @@ function StudentCourses() {
                       <h2 className="text-lg font-bold text-text-primary">
                         {course.code}
                       </h2>
-                      <p className="mt-0.5 text-xs text-text-secondary">
+                      <p className="mt-1 text-xs text-text-secondary">
                         {course.title}
                       </p>
                     </div>
@@ -244,10 +298,10 @@ function StudentCourses() {
                   </div>
 
                   {/* Progress Bar */}
-                  <div className="mt-6">
-                    <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
+                  <div className="mt-5">
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
                       <div
-                        className={`h-full rounded-full transition-all duration-300 ${course.barColor}`}
+                        className={`h-full rounded-full ${course.barColor}`}
                         style={{ width: `${course.percent}%` }}
                       />
                     </div>
@@ -255,20 +309,22 @@ function StudentCourses() {
 
                   {/* Metrics Breakdown */}
                   {course.isEnrolled ? (
-                    <div className="mt-4 flex items-center justify-between text-xs text-text-secondary">
+                    <div className="mt-3 flex items-center justify-between text-xs text-text-secondary">
                       <span>{course.attended} attended</span>
                       <span>{course.missed} missed</span>
                       <span>{course.total} total</span>
                     </div>
                   ) : (
-                    <p className="mt-4 text-xs text-text-secondary">
+                    <p className="mt-3 text-xs text-text-secondary">
                       Enroll to see this course's schedule and attendance.
                     </p>
                   )}
 
                   <button
                     type="button"
-                    disabled={course.isEnrolled || enrollingCourseId === course.id}
+                    disabled={
+                      course.isEnrolled || enrollingCourseId === course.id
+                    }
                     onClick={() => handleEnroll(course.id)}
                     className={`mt-4 inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition ${
                       course.isEnrolled
@@ -283,7 +339,9 @@ function StudentCourses() {
                     ) : (
                       <>
                         <Plus size={16} />
-                        {enrollingCourseId === course.id ? "Enrolling..." : "Enroll"}
+                        {enrollingCourseId === course.id
+                          ? "Enrolling..."
+                          : "Enroll"}
                       </>
                     )}
                   </button>

@@ -8,6 +8,7 @@ import {
   X,
   Check,
   Loader,
+  Bell,
 } from "lucide-react";
 import { LuMenu } from "react-icons/lu";
 import StudentSidebar from "../components/Student/StudentSidebar";
@@ -22,6 +23,9 @@ function StudentDashboard() {
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  // Notification dropdown state
+  const [showNotifications, setShowNotifications] = useState(false);
+
   // Real data state variables
   const [profile, setProfile] = useState(null);
   const [todaysClasses, setTodaysClasses] = useState([]);
@@ -35,7 +39,11 @@ function StudentDashboard() {
     enrolledCoursesCount: 0,
   });
 
-  // Fetch Dashboard Data Function (Memoized with useCallback to avoid linter warnings and scoping issues)
+  const normalizeAttendanceStatus = (value) =>
+    String(value ?? "")
+      .trim()
+      .toLowerCase();
+
   // Fetch Dashboard Data Function
   const fetchDashboardData = useCallback(async () => {
     try {
@@ -71,7 +79,9 @@ function StudentDashboard() {
         .eq("student_id", user.id);
 
       const totalAttended =
-        attendanceRecords?.filter((r) => r.status === "present").length || 0;
+        attendanceRecords?.filter(
+          (r) => normalizeAttendanceStatus(r.status) === "present",
+        ).length || 0;
 
       // Fetch all class sessions for enrolled courses to compute metrics
       let totalCourseSessions = 0;
@@ -96,7 +106,7 @@ function StudentDashboard() {
             attendanceRecords?.filter(
               (r) =>
                 sessionIds.includes(r.class_session_id) &&
-                r.status === "present",
+                normalizeAttendanceStatus(r.status) === "present",
             ).length || 0;
 
           const total = courseSessions.length;
@@ -149,8 +159,8 @@ function StudentDashboard() {
             .select(
               "id, session_date, start_time, end_time, venue, attendance_open, courses(course_code, course_name)",
             )
-            .eq("session_date", today)
-            .in("course_id", enrolledCourseIds);
+            .in("course_id", enrolledCourseIds)
+            .or(`attendance_open.eq.true,session_date.eq.${today}`);
 
         if (todaySessionsError) throw todaySessionsError;
         todaySessions = sessionsForToday || [];
@@ -158,7 +168,9 @@ function StudentDashboard() {
 
       const formattedClasses = todaySessions.map((s) => {
         const isMarked = attendanceRecords?.some(
-          (r) => r.class_session_id === s.id,
+          (r) =>
+            r.class_session_id === s.id &&
+            normalizeAttendanceStatus(r.status) === "present",
         );
         return {
           id: s.id,
@@ -188,10 +200,62 @@ function StudentDashboard() {
     }
   }, []);
 
+  // Dismiss / Clear Warning Handler
+  const handleDismissWarning = async (warningId) => {
+    try {
+      // Update backend status to resolved
+      const { error } = await supabase
+        .from("warnings")
+        .update({ resolved: true })
+        .eq("id", warningId);
+
+      if (error) throw error;
+
+      // Filter out from local state instantly
+      setWarnings((prev) => prev.filter((w) => w.id !== warningId));
+    } catch (err) {
+      console.error("Error dismissing warning:", err.message);
+      alert("Could not dismiss notification.");
+    }
+  };
+
   useEffect(() => {
     (async () => {
       await fetchDashboardData();
     })();
+
+    // Setup Realtime subscription for new warnings
+    let channel;
+    const setupRealtimeSubscription = async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+
+      channel = supabase
+        .channel("student-warnings-channel")
+        .on(
+          "postgres_changes",
+          {
+            event: "INSERT",
+            schema: "public",
+            table: "warnings",
+            filter: `student_id=eq.${user.id}`,
+          },
+          (payload) => {
+            setWarnings((prev) => [payload.new, ...prev]);
+          },
+        )
+        .subscribe();
+    };
+
+    setupRealtimeSubscription();
+
+    return () => {
+      if (channel) {
+        supabase.removeChannel(channel);
+      }
+    };
   }, [fetchDashboardData]);
 
   // Mark Attendance Handler
@@ -203,21 +267,47 @@ function StudentDashboard() {
 
       const {
         data: { user },
+        error: userError,
       } = await supabase.auth.getUser();
 
-      // Insert record into attendance_records
+      if (userError || !user) throw new Error("User not authenticated.");
+
+      const { data: existingRecord } = await supabase
+        .from("attendance_records")
+        .select("id")
+        .eq("class_session_id", selectedSessionId)
+        .eq("student_id", user.id)
+        .maybeSingle();
+
+      if (existingRecord) {
+        setTodaysClasses((prev) =>
+          prev.map((item) =>
+            item.id === selectedSessionId ? { ...item, status: "Marked" } : item,
+          ),
+        );
+        setIsSuccess(true);
+        setTimeout(() => {
+          setShowModal(false);
+          setIsSuccess(false);
+          setSelectedSessionId(null);
+          fetchDashboardData();
+        }, 1800);
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+
       const { error } = await supabase.from("attendance_records").insert([
         {
           student_id: user.id,
           class_session_id: selectedSessionId,
           status: "present",
-          marked_at: new Date().toISOString(),
+          marked_at: nowIso,
         },
       ]);
 
       if (error) throw error;
 
-      // Realtime state update
       setTodaysClasses((prev) =>
         prev.map((item) =>
           item.id === selectedSessionId ? { ...item, status: "Marked" } : item,
@@ -230,7 +320,7 @@ function StudentDashboard() {
         setShowModal(false);
         setIsSuccess(false);
         setSelectedSessionId(null);
-        fetchDashboardData(); // Refresh overall calculations
+        fetchDashboardData();
       }, 1800);
     } catch (err) {
       alert("Error marking attendance: " + err.message);
@@ -267,19 +357,19 @@ function StudentDashboard() {
 
       {/* Main Container */}
       <div className="flex flex-col min-w-0 lg:ml-64 min-h-screen">
-        {/* Mobile Top Header Bar */}
-        <div className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 lg:hidden">
+        {/* Top Header Bar */}
+        <div className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 lg:px-8">
           <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={() => setIsSidebarOpen(true)}
-              className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+              className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 hover:text-slate-900 lg:hidden"
               aria-label="Open sidebar"
             >
               <LuMenu size={22} />
             </button>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 lg:hidden">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600">
                 <img
                   src={logo}
@@ -291,6 +381,87 @@ function StudentDashboard() {
                 ClassPulse
               </span>
             </div>
+          </div>
+
+          {/* Right Header Element: Notification Bell */}
+          <div className="relative ml-auto flex items-center">
+            <button
+              type="button"
+              onClick={() => setShowNotifications((prev) => !prev)}
+              className="relative rounded-xl p-2 text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition"
+              aria-label="View notifications"
+            >
+              <Bell size={20} />
+              {warnings.length > 0 && (
+                <span className="absolute top-1.5 right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white">
+                  {warnings.length}
+                </span>
+              )}
+            </button>
+
+            {/* Notifications Dropdown Modal */}
+            {showNotifications && (
+              <div className="absolute right-0 mt-64 w-80 max-w-sm rounded-2xl border border-border bg-white p-4 shadow-xl z-50">
+                <div className="mb-3 flex items-center justify-between border-b border-border pb-2">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-xs font-bold text-slate-900">
+                      Lecturer Warnings
+                    </h3>
+                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+                      {warnings.length}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowNotifications(false)}
+                    className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition"
+                    aria-label="Close notifications"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="max-h-60 space-y-2 overflow-y-auto">
+                  {warnings.length > 0 ? (
+                    warnings.map((warn) => (
+                      <div
+                        key={warn.id}
+                        className="flex items-start justify-between gap-2.5 rounded-xl bg-amber-50/60 p-3 border border-amber-100"
+                      >
+                        <div className="flex items-start gap-2">
+                          <AlertTriangle
+                            className="mt-0.5 shrink-0 text-amber-600"
+                            size={16}
+                          />
+                          <div>
+                            <p className="text-xs font-semibold text-amber-900">
+                              {warn.courses?.course_code || "Course Notice"}
+                            </p>
+                            <p className="mt-0.5 text-[11px] leading-relaxed text-amber-800/90">
+                              {warn.message}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Dismiss Notification Button */}
+                        <button
+                          type="button"
+                          onClick={() => handleDismissWarning(warn.id)}
+                          className="shrink-0 rounded-lg p-1 text-amber-700 hover:bg-amber-200/60 transition"
+                          title="Dismiss notification"
+                        >
+                          <Check size={14} />
+                        </button>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="py-6 text-center text-xs text-text-secondary">
+                      No active warnings. You're doing great!
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -448,7 +619,7 @@ function StudentDashboard() {
               <h2 className="mb-4 text-base font-bold text-text-primary">
                 Attendance Trend
               </h2>
-              <div className="flex h-52 w-full flex-col justify-end rounded-xl border border-border/50 bg-gradient-to-t from-blue-50/50 to-transparent p-4">
+              <div className="flex h-52 w-full flex-col justify-end rounded-xl border border-border/50 bg-linear-to-t from-blue-50/50 to-transparent p-4">
                 <div className="relative h-32 w-full">
                   <svg
                     className="h-full w-full overflow-visible"
@@ -566,8 +737,8 @@ function StudentDashboard() {
                             course.percent < 60
                               ? "text-red-600"
                               : course.percent < 75
-                                ? "text-amber-600"
-                                : "text-emerald-600"
+                              ? "text-amber-600"
+                              : "text-emerald-600"
                           }`}
                         >
                           {course.percent}%

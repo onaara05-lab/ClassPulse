@@ -1,24 +1,29 @@
-import { useState, useEffect } from 'react';
-import { ChevronDown, X, Loader2 } from 'lucide-react';
-import { supabase } from '../../supabaseClient';
+import { useState, useEffect } from "react";
+import { ChevronDown, X, Loader2, } from "lucide-react";
+import { supabase } from "../../supabaseClient";
 
-export default function NewSessionModal({ isOpen, onClose, onSessionCreated, courses: initialCourses = [] }) {
+export default function NewSessionModal({
+  isOpen,
+  onClose,
+  onSessionCreated,
+  courses: initialCourses = [],
+}) {
   const [courses, setCourses] = useState(initialCourses);
   const [loadingCourses, setLoadingCourses] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
   const [formData, setFormData] = useState({
-    courseId: '',
-    sessionType: 'Lecture',
-    durationMinutes: '15',
+    courseId: "",
+    sessionType: "Lecture",
+    durationMinutes: "15",
   });
 
-  // Fetch lecturer's courses if not provided via props
+  // Fetch lecturer's courses and enrollment counts when modal opens
   useEffect(() => {
     let isMounted = true;
 
-    async function fetchLecturerCourses() {
+    async function fetchLecturerCoursesAndCounts() {
       if (!isOpen) return;
 
       try {
@@ -33,24 +38,46 @@ export default function NewSessionModal({ isOpen, onClose, onSessionCreated, cou
         if (userError) throw userError;
         if (!user) throw new Error("No authenticated user found.");
 
-        const { data, error: fetchError } = await supabase
+        const { data: coursesData, error: fetchError } = await supabase
           .from("courses")
           .select("id, course_code, course_name")
           .eq("lecturer_id", user.id);
 
         if (fetchError) throw fetchError;
 
-        if (isMounted && data) {
-          const mappedCourses = data.map((c) => ({
-            id: c.id,
-            code: c.course_code,
-            title: c.course_name,
-          }));
-          setCourses(mappedCourses);
-          
-          if (mappedCourses.length > 0) {
-            setFormData((prev) => ({ ...prev, courseId: mappedCourses[0].id }));
+        if (coursesData && coursesData.length > 0) {
+          const courseIds = coursesData.map((c) => c.id);
+
+          // Fetch enrollments to calculate student counts per course
+          const { data: enrollmentsData, error: enrollmentsError } = await supabase
+            .from("enrollments")
+            .select("course_id")
+            .in("course_id", courseIds);
+
+          if (enrollmentsError) throw enrollmentsError;
+
+          // Map student counts by course_id
+          const studentCounts = {};
+          (enrollmentsData || []).forEach(({ course_id }) => {
+            studentCounts[course_id] = (studentCounts[course_id] || 0) + 1;
+          });
+
+          if (isMounted) {
+            const mappedCourses = coursesData.map((c) => ({
+              id: c.id,
+              code: c.course_code,
+              title: c.course_name,
+              studentCount: studentCounts[c.id] || 0,
+            }));
+
+            setCourses(mappedCourses);
+
+            if (mappedCourses.length > 0) {
+              setFormData((prev) => ({ ...prev, courseId: mappedCourses[0].id }));
+            }
           }
+        } else if (isMounted) {
+          setCourses([]);
         }
       } catch (err) {
         console.error("Error loading courses:", err);
@@ -62,7 +89,7 @@ export default function NewSessionModal({ isOpen, onClose, onSessionCreated, cou
       }
     }
 
-    fetchLecturerCourses();
+    fetchLecturerCoursesAndCounts();
 
     return () => {
       isMounted = false;
@@ -87,26 +114,52 @@ export default function NewSessionModal({ isOpen, onClose, onSessionCreated, cou
       setSubmitting(true);
       setError(null);
 
-      // Calculate session window expiration time
+      // Calculate session window times and expiration
       const startTime = new Date();
-      const expiresAt = new Date(
-        startTime.getTime() + parseInt(formData.durationMinutes, 10) * 60000
-      );
+      const durationMs = parseInt(formData.durationMinutes, 10) * 60000;
+      const expiresAt = new Date(startTime.getTime() + durationMs);
 
-      // Insert new session into Supabase
+      // Use the local calendar date to keep student and lecturer views aligned
+      const getLocalDateString = (date = new Date()) => {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        return `${year}-${month}-${day}`;
+      };
+
+      // Format times to HH:MM:SS format for DB compatibility
+      const formatTimeString = (date) => date.toTimeString().split(" ")[0];
+
+      // Insert new session into Supabase with all required fields
       const { data, error: insertError } = await supabase
         .from("class_sessions")
         .insert([
           {
             course_id: formData.courseId,
             session_type: formData.sessionType,
-            session_date: startTime.toISOString().split("T")[0],
+            session_date: getLocalDateString(startTime),
+            start_time: formatTimeString(startTime),
+            end_time: formatTimeString(expiresAt),
             created_at: startTime.toISOString(),
             expires_at: expiresAt.toISOString(),
             is_active: true,
+            attendance_open: true,
           },
         ])
-        .select("*")
+        .select(
+          `
+          id,
+          course_id,
+          session_date,
+          start_time,
+          end_time,
+          session_type,
+          attendance_open,
+          is_active,
+          expires_at,
+          courses (id, course_code, course_name)
+        `,
+        )
         .single();
 
       if (insertError) throw insertError;
@@ -128,7 +181,6 @@ export default function NewSessionModal({ isOpen, onClose, onSessionCreated, cou
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
       <div className="relative w-full max-w-[480px] overflow-hidden rounded-2xl bg-white p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
-        
         {/* Close Button */}
         <button
           onClick={onClose}
@@ -176,7 +228,7 @@ export default function NewSessionModal({ isOpen, onClose, onSessionCreated, cou
                 </option>
                 {courses.map((course) => (
                   <option key={course.id} value={course.id}>
-                    {course.code} - {course.title}
+                    {course.code} - {course.title} ({course.studentCount ?? 0} {course.studentCount === 1 ? "student" : "students"})
                   </option>
                 ))}
               </select>

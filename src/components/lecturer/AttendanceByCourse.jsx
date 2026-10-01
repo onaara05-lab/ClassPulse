@@ -14,6 +14,11 @@ import {
 import { LuRefreshCw } from "react-icons/lu";
 import { supabase } from "../../supabaseClient";
 
+const normalizeAttendanceStatus = (value) =>
+  String(value ?? "")
+    .trim()
+    .toLowerCase();
+
 function AttendanceCharts() {
   const [courseAttendanceData, setCourseAttendanceData] = useState([]);
   const [attendanceTrendData, setAttendanceTrendData] = useState([]);
@@ -23,11 +28,82 @@ function AttendanceCharts() {
   useEffect(() => {
     let isMounted = true;
 
+    async function resolveLecturerCourseIds(user) {
+      const { data: profileData } = await supabase
+        .from("profiles")
+        .select("full_name")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      const candidateNames = [
+        profileData?.full_name,
+        user.user_metadata?.full_name,
+        user.user_metadata?.name,
+        user.email?.split("@")[0],
+      ]
+        .map((value) => value?.trim())
+        .filter(Boolean);
+
+      const { data: lecturerCourses = [] } = await supabase
+        .from("courses")
+        .select("id")
+        .eq("lecturer_id", user.id);
+
+      let courseIds = [
+        ...new Set((lecturerCourses || []).map((course) => course.id)),
+      ];
+
+      for (const candidateName of [...new Set(candidateNames)]) {
+        if (courseIds.length > 0) break;
+
+        const { data: namedCourses = [] } = await supabase
+          .from("courses")
+          .select("id")
+          .eq("lecturer_name", candidateName);
+
+        courseIds = [
+          ...new Set([
+            ...courseIds,
+            ...namedCourses.map((course) => course.id),
+          ]),
+        ];
+      }
+
+      if (courseIds.length === 0) {
+        const { data: openSessions = [] } = await supabase
+          .from("class_sessions")
+          .select("course_id, courses ( lecturer_id, lecturer_name )")
+          .eq("attendance_open", true);
+
+        const candidateSet = new Set(
+          candidateNames.map((name) => name.toLowerCase()),
+        );
+        courseIds = [
+          ...new Set(
+            (openSessions || [])
+              .filter((session) => {
+                const course = session.courses;
+                if (!course) return false;
+
+                return (
+                  course.lecturer_id === user.id ||
+                  (course.lecturer_name &&
+                    candidateSet.has(course.lecturer_name.toLowerCase()))
+                );
+              })
+              .map((session) => session.course_id)
+              .filter(Boolean),
+          ),
+        ];
+      }
+
+      return [...new Set(courseIds)];
+    }
+
     async function fetchChartData() {
       try {
         setError(null);
 
-        // 1. Get authenticated user
         const {
           data: { user },
           error: userError,
@@ -36,11 +112,21 @@ function AttendanceCharts() {
         if (userError) throw userError;
         if (!user) throw new Error("No authenticated user.");
 
-        // 2. Fetch courses taught by the lecturer
+        const courseIds = await resolveLecturerCourseIds(user);
+
+        if (!courseIds || courseIds.length === 0) {
+          if (isMounted) {
+            setCourseAttendanceData([]);
+            setAttendanceTrendData([]);
+            setLoading(false);
+          }
+          return;
+        }
+
         const { data: courses, error: coursesError } = await supabase
           .from("courses")
           .select("id, course_code, course_name")
-          .eq("lecturer_id", user.id);
+          .in("id", courseIds);
 
         if (coursesError) throw coursesError;
 
@@ -53,15 +139,13 @@ function AttendanceCharts() {
           return;
         }
 
-        const courseIds = courses.map((c) => c.id);
+        const resolvedCourseIds = courses.map((c) => c.id);
 
-        // 3. Fetch enrollments
-        const { data: enrollments, error: enrollmentsErr } = await supabase
+        // Fetch enrollments
+        const { data: enrollments } = await supabase
           .from("enrollments")
           .select("course_id, student_id")
-          .in("course_id", courseIds);
-
-        if (enrollmentsErr) throw enrollmentsErr;
+          .in("course_id", resolvedCourseIds);
 
         const studentCountByCourse = {};
         enrollments?.forEach((e) => {
@@ -69,11 +153,11 @@ function AttendanceCharts() {
             (studentCountByCourse[e.course_id] || 0) + 1;
         });
 
-        // 4. Fetch class sessions
+        // Fetch sessions
         const { data: sessions, error: sessionsErr } = await supabase
           .from("class_sessions")
           .select("id, course_id, session_date")
-          .in("course_id", courseIds)
+          .in("course_id", resolvedCourseIds)
           .order("session_date", { ascending: true });
 
         if (sessionsErr) throw sessionsErr;
@@ -89,26 +173,54 @@ function AttendanceCharts() {
 
         const sessionIds = sessions.map((s) => s.id);
 
-        // 5. Fetch present records
+        // Fetch attendance records
         const { data: records, error: recordsErr } = await supabase
           .from("attendance_records")
-          .select("class_session_id, status")
-          .in("class_session_id", sessionIds)
-          .eq("status", "present");
+          .select("class_session_id, student_id, status")
+          .in("class_session_id", sessionIds);
 
         if (recordsErr) throw recordsErr;
 
+        // Map records back to course via sessions for fallback unique attendee calculation
+        const sessionToCourseMap = {};
+        sessions.forEach((s) => {
+          sessionToCourseMap[s.id] = s.course_id;
+        });
+
         const presentCountBySession = {};
+        const uniqueAttendeesPerCourse = {};
+        const seenAttendance = new Set();
+
         records?.forEach((r) => {
+          const status = normalizeAttendanceStatus(r.status);
+          if (status !== "present" && status !== "late") return;
+
+          const courseId = sessionToCourseMap[r.class_session_id];
+          const uniqueKey = `${courseId}:${r.class_session_id}:${r.student_id}`;
+          if (seenAttendance.has(uniqueKey)) return;
+          seenAttendance.add(uniqueKey);
+
           presentCountBySession[r.class_session_id] =
             (presentCountBySession[r.class_session_id] || 0) + 1;
+
+          if (courseId) {
+            if (!uniqueAttendeesPerCourse[courseId]) {
+              uniqueAttendeesPerCourse[courseId] = new Set();
+            }
+            if (r.student_id) {
+              uniqueAttendeesPerCourse[courseId].add(r.student_id);
+            }
+          }
         });
 
         // --- Calculate Bar Chart Data ---
         const courseMap = {};
         sessions.forEach((session) => {
           if (!courseMap[session.course_id]) {
-            courseMap[session.course_id] = { totalSessions: 0, totalPresent: 0 };
+            courseMap[session.course_id] = {
+              totalSessions: 0,
+              totalPresent: 0,
+            };
           }
           courseMap[session.course_id].totalSessions += 1;
           courseMap[session.course_id].totalPresent +=
@@ -117,12 +229,24 @@ function AttendanceCharts() {
 
         const barData = courses.map((c) => {
           const stats = courseMap[c.id];
-          const enrolledStudents = studentCountByCourse[c.id] || 0;
+          // Fallback to unique attendees if formal enrollments table is empty so it doesn't divide by zero
+          const enrolledStudents =
+            studentCountByCourse[c.id] ||
+            (uniqueAttendeesPerCourse[c.id]
+              ? uniqueAttendeesPerCourse[c.id].size
+              : 0);
 
           let attendance = 0;
           if (stats && stats.totalSessions > 0 && enrolledStudents > 0) {
             const possible = stats.totalSessions * enrolledStudents;
-            attendance = Math.round((stats.totalPresent / possible) * 100);
+            // Cap attendance percentage at 100% max
+            attendance = Math.min(
+              100,
+              Math.round((stats.totalPresent / possible) * 100),
+            );
+          } else if (stats && stats.totalPresent > 0) {
+            // If records exist but denominator defaults cleanly, show 100% or relative activity indicator
+            attendance = 100;
           }
 
           return {
@@ -141,7 +265,11 @@ function AttendanceCharts() {
               })
             : "Session " + s.id.slice(0, 4);
 
-          const enrolledInCourse = studentCountByCourse[s.course_id] || 0;
+          const enrolledInCourse =
+            studentCountByCourse[s.course_id] ||
+            (uniqueAttendeesPerCourse[s.course_id]
+              ? uniqueAttendeesPerCourse[s.course_id].size
+              : 1);
           const present = presentCountBySession[s.id] || 0;
 
           if (!trendMap[dateKey]) {
@@ -155,7 +283,10 @@ function AttendanceCharts() {
           const item = trendMap[dateKey];
           const attendance =
             item.totalPossible > 0
-              ? Math.round((item.totalPresent / item.totalPossible) * 100)
+              ? Math.min(
+                  100,
+                  Math.round((item.totalPresent / item.totalPossible) * 100),
+                )
               : 0;
           return {
             week: dateKey,
@@ -180,9 +311,11 @@ function AttendanceCharts() {
     }
 
     fetchChartData();
+    const refreshId = window.setInterval(fetchChartData, 8000);
 
     return () => {
       isMounted = false;
+      window.clearInterval(refreshId);
     };
   }, []);
 

@@ -350,7 +350,7 @@ function LecturerReports() {
       }
     } catch (err) {
       console.error("Export failed:", err);
-      alert("Failed to generate report. Please check your data connection.");
+      alert("Failed to generate report. Please check if your database tables (report_exports) exist.");
     } finally {
       setDownloadingId(null);
     }

@@ -1,4 +1,4 @@
-import { NavLink, Link, useNavigate } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import logo from "../../assets/classpulse-logo.png";
 import {
   LuLayoutDashboard,
@@ -97,16 +97,13 @@ function LecturerSidebar({ isOpen, onClose }) {
         {/* Logo Section */}
         <div className="flex h-16 items-center justify-between border-b border-white/10 px-5">
           <NavLink to="/lecturer/dashboard" className="flex items-center gap-3">
-            <Link
-              to="/"
-              className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600"
-            >
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600">
               <img
                 src={logo}
                 alt="ClassPulse"
                 className="h-14 w-auto object-contain sm:h-16"
               />
-            </Link>
+            </div>
 
             <span className="text-lg font-bold tracking-tight">ClassPulse</span>
           </NavLink>

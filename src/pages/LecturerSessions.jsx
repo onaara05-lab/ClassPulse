@@ -1,8 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Plus, X, Menu, Activity, Radio, Loader2 } from "lucide-react";
 
 import logo from "../assets/classpulse-logo.png";
 import LecturerSidebar from "../components/lecturer/LecturerSidebar";
+import NewSessionModal from "../components/lecturer/NewSessionModal";
 import { supabase } from "../supabaseClient";
 
 // Outer helper functions
@@ -25,271 +26,343 @@ const formatDate = (dateStr) => {
   });
 };
 
+const normalizeAttendanceStatus = (value) =>
+  String(value ?? "")
+    .trim()
+    .toLowerCase();
+
 function LecturerSessions() {
   const [sessions, setSessions] = useState([]);
   const [courses, setCourses] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
 
-  // Tracks active session state for active live modal view
+  // Tracks active session state for active live modal view or banner
   const [activeSession, setActiveSession] = useState(null);
-
-  const [formData, setFormData] = useState({
-    courseId: "",
-    type: "",
-    date: "",
-    time: "",
-    window: "",
-    total: "",
-  });
-
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    let initialLoad = true;
-    const fetchInitialData = async () => {
+  const handleCloseSession = useCallback(
+    async (sessionId) => {
+      const targetId =
+        typeof sessionId === "string" ? sessionId : activeSession?.id;
+      if (!targetId) return;
+
       try {
-        if (initialLoad) setLoading(true);
-
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-
-        if (!user) {
-          setLoading(false);
-          return;
-        }
-
-        // 1. Fetch lecturer's courses
-        const { data: coursesData, error: coursesError } = await supabase
-          .from("courses")
-          .select("id, course_code, course_name")
-          .eq("lecturer_id", user.id);
-
-        if (coursesError) throw coursesError;
-        const lecturerCourses = coursesData || [];
-        setCourses(lecturerCourses.map((course) => ({
-          id: course.id,
-          code: course.course_code,
-          title: course.course_name,
-        })));
-
-        const courseIds = lecturerCourses.map((course) => course.id);
-
-        if (courseIds.length === 0) {
-          setSessions([]);
-          setLoading(false);
-          return;
-        }
-
-        // 2. Fetch sessions corresponding to lecturer's courses
-        const { data: sessionsData, error: sessionsError } = await supabase
+        const { error: updateError } = await supabase
           .from("class_sessions")
-          .select(`
-            id,
-            session_date,
-            start_time,
-            end_time,
-            session_type,
-            attendance_open,
-            created_at,
-            courses (id, course_code)
-          `)
-          .in("course_id", courseIds)
-          .order("created_at", { ascending: false });
+          .update({ attendance_open: false, is_active: false })
+          .eq("id", targetId);
 
-        if (sessionsError) throw sessionsError;
+        if (updateError) throw updateError;
 
-        const sessionIds = (sessionsData || []).map((session) => session.id);
-        const { data: enrollments, error: enrollmentsError } =
-          await supabase
-            .from("enrollments")
-            .select("course_id, student_id")
-            .in("course_id", courseIds);
-        if (enrollmentsError) throw enrollmentsError;
-
-        const { data: attendanceRecords, error: attendanceError } =
-          sessionIds.length > 0
-            ? await supabase
-                .from("attendance_records")
-                .select("class_session_id, status")
-                .in("class_session_id", sessionIds)
-            : { data: [], error: null };
-        if (attendanceError) throw attendanceError;
-
-        const studentCountByCourse = new Map();
-        (enrollments || []).forEach(({ course_id }) => {
-          studentCountByCourse.set(
-            course_id,
-            (studentCountByCourse.get(course_id) || 0) + 1,
-          );
-        });
-
-        // Map sessions database record to UI presentation format
-        const formattedSessions = (sessionsData || []).map((s) => ({
-          id: s.id,
-          course: s.courses?.course_code || "N/A",
-          type: s.session_type || "Lecture",
-          date: formatDate(s.session_date),
-          time: formatTime(s.start_time),
-          present: (attendanceRecords || []).filter(
-            (record) =>
-              record.class_session_id === s.id &&
-              record.status?.toLowerCase() === "present",
-          ).length,
-          total: studentCountByCourse.get(s.courses?.id) || 0,
-          window: s.start_time && s.end_time
-            ? `${Math.round(
-                (new Date(`1970-01-01T${s.end_time}`) -
-                  new Date(`1970-01-01T${s.start_time}`)) /
-                  60000,
-              )} min`
-            : "N/A",
-          status: s.attendance_open ? "Open" : "Closed",
-        }));
-
-        setSessions(formattedSessions);
+        setSessions((prev) =>
+          prev.map((s) => (s.id === targetId ? { ...s, status: "Closed" } : s)),
+        );
       } catch (err) {
-        console.error("Error fetching sessions:", err);
+        console.error("Error closing session:", err);
+        setError(err.message || "Failed to close session.");
       } finally {
-        if (initialLoad) {
-          setLoading(false);
-          initialLoad = false;
-        }
+        setActiveSession(null);
       }
-    };
+    },
+    [activeSession],
+  );
 
-    fetchInitialData();
-    const refreshInterval = window.setInterval(fetchInitialData, 10000);
-    return () => window.clearInterval(refreshInterval);
-  }, []);
-
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-
-    if (
-      !formData.courseId ||
-      !formData.type ||
-      !formData.date ||
-      !formData.time ||
-      !formData.window ||
-      !formData.total
-    ) {
-      setError("Please fill in all fields.");
-      return;
-    }
-
+  const fetchInitialData = useCallback(async (initialLoad = false) => {
     try {
-      setSubmitting(true);
+      if (initialLoad) setLoading(true);
       setError("");
 
-      const startDateTime = new Date(`${formData.date}T${formData.time}`);
-      const endDateTime = new Date(
-        startDateTime.getTime() + Number(formData.window) * 60_000,
-      );
-      const { data, error: insertError } = await supabase
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+
+      if (userError) throw userError;
+      if (!user) {
+        setSessions([]);
+        setLoading(false);
+        return;
+      }
+
+      const resolveLecturerCourseIds = async () => {
+        const { data: profileData, error: profileError } = await supabase
+          .from("profiles")
+          .select("full_name")
+          .eq("id", user.id)
+          .maybeSingle();
+
+        if (profileError) {
+          console.warn("Profile fallback lookup failed:", profileError.message);
+        }
+
+        const candidateNames = [
+          profileData?.full_name,
+          user.user_metadata?.full_name,
+          user.user_metadata?.name,
+          user.email?.split("@")[0],
+        ]
+          .map((value) => value?.trim())
+          .filter(Boolean);
+
+        const { data: lecturerCourses = [], error: directCoursesError } =
+          await supabase
+            .from("courses")
+            .select("id, course_code, course_name, total_students")
+            .eq("lecturer_id", user.id);
+
+        if (directCoursesError) {
+          console.warn(
+            "Direct lecturer course lookup failed:",
+            directCoursesError.message,
+          );
+        }
+
+        let courseIds = [
+          ...new Set((lecturerCourses || []).map((course) => course.id)),
+        ];
+
+        for (const candidateName of [...new Set(candidateNames)]) {
+          if (courseIds.length > 0) break;
+
+          const { data: namedCourses = [], error: namedCoursesError } =
+            await supabase
+              .from("courses")
+              .select("id, course_code, course_name, total_students")
+              .eq("lecturer_name", candidateName);
+
+          if (namedCoursesError) {
+            console.warn(
+              "Fallback lecturer-name lookup failed:",
+              namedCoursesError.message,
+            );
+            continue;
+          }
+
+          courseIds = [
+            ...new Set([
+              ...courseIds,
+              ...namedCourses.map((course) => course.id),
+            ]),
+          ];
+        }
+
+        const coursesData = await supabase
+          .from("courses")
+          .select("id, course_code, course_name, total_students")
+          .in(
+            "id",
+            courseIds.length > 0
+              ? courseIds
+              : ["00000000-0000-0000-0000-000000000000"],
+          );
+
+        return {
+          courseIds,
+          coursesData: coursesData.data || [],
+        };
+      };
+
+      const { courseIds, coursesData } = await resolveLecturerCourseIds();
+      const lecturerCourses = coursesData || [];
+      const mappedCourses = lecturerCourses.map((course) => ({
+        id: course.id,
+        code: course.course_code,
+        title: course.course_name,
+        totalStudents: course.total_students || 0,
+      }));
+
+      setCourses(mappedCourses);
+
+      if (courseIds.length === 0) {
+        setSessions([]);
+        setLoading(false);
+        return;
+      }
+
+      const { data: sessionsData, error: sessionsError } = await supabase
         .from("class_sessions")
-        .insert([
-          {
-            course_id: formData.courseId,
-            session_type: formData.type,
-            session_date: formData.date,
-            start_time: formData.time,
-            end_time: endDateTime.toTimeString().slice(0, 8),
-            duration_minutes: Number(formData.window),
-            expires_at: endDateTime.toISOString(),
-            attendance_open: true,
-            is_active: true,
-          },
-        ])
-        .select(`
+        .select(
+          `
           id,
+          course_id,
           session_date,
           start_time,
           end_time,
           session_type,
           attendance_open,
-          courses (id, course_code)
-        `)
-        .single();
+          is_active,
+          expires_at,
+          created_at,
+          courses (id, course_code, total_students)
+        `,
+        )
+        .in("course_id", courseIds)
+        .order("created_at", { ascending: false });
 
-      if (insertError) throw insertError;
+      if (sessionsError) throw sessionsError;
 
-      const createdSession = {
-        id: data.id,
-        course: data.courses?.course_code || "N/A",
-        type: data.session_type,
-        date: formatDate(data.session_date),
-        time: formatTime(data.start_time),
-        present: 0,
-        total: Number(formData.total),
-        window: `${formData.window} min`,
-        status: data.attendance_open ? "Open" : "Closed",
-      };
+      const currentActive = (sessionsData || []).find(
+        (s) => s.is_active && s.attendance_open,
+      );
 
-      setSessions((prev) => [createdSession, ...prev]);
-      setActiveSession(createdSession);
+      if (currentActive) {
+        const courseCode =
+          currentActive.courses?.course_code ||
+          mappedCourses.find((c) => c.id === currentActive.course_id)?.code ||
+          "N/A";
 
-      setFormData({
-        courseId: "",
-        type: "",
-        date: "",
-        time: "",
-        window: "",
-        total: "",
-      });
-    } catch (err) {
-      console.error("Error opening session:", err);
-      setError(err.message || "Failed to open attendance session.");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleCloseSession = async () => {
-    if (activeSession) {
-      try {
-        const { error: updateError } = await supabase
-          .from("class_sessions")
-          .update({ attendance_open: false, is_active: false })
-          .eq("id", activeSession.id);
-
-        if (updateError) throw updateError;
-
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === activeSession.id ? { ...s, status: "Closed" } : s
-          )
+        setActiveSession((prev) =>
+          prev?.id === currentActive.id
+            ? prev
+            : {
+                id: currentActive.id,
+                course: courseCode,
+                type: currentActive.session_type || "Lecture",
+                expires_at: currentActive.expires_at,
+              },
         );
-      } catch (err) {
-        console.error("Error closing session:", err);
+      } else {
+        setActiveSession(null);
+      }
+
+      const sessionIds = (sessionsData || []).map((session) => session.id);
+
+      // FIXED: Added student_id to the select fields below
+      const { data: attendanceRecords, error: attendanceError } =
+        sessionIds.length > 0
+          ? await supabase
+              .from("attendance_records")
+              .select("class_session_id, status, student_id")
+              .in("class_session_id", sessionIds)
+          : { data: [], error: null };
+
+      if (attendanceError) throw attendanceError;
+
+      const formattedSessions = (sessionsData || []).map((s) => {
+        const courseId = s.course_id ?? s.courses?.id;
+        const matchedCourse = mappedCourses.find((course) => course.id === courseId);
+        const courseCode = s.courses?.course_code || matchedCourse?.code || "N/A";
+
+        const totalCount = s.courses?.total_students ?? matchedCourse?.totalStudents ?? 0;
+
+        const presentSet = new Set(
+          (attendanceRecords || [])
+            .filter((record) => {
+              if (record.class_session_id !== s.id) return false;
+              const status = normalizeAttendanceStatus(record.status);
+              return status === "present" || status === "late";
+            })
+            .map((record) => record.student_id)
+            .filter(Boolean),
+        );
+
+        const presentCount = presentSet.size;
+
+        return {
+          id: s.id,
+          course: courseCode,
+          type: s.session_type || "Lecture",
+          date: formatDate(s.session_date),
+          time: formatTime(s.start_time),
+          present: presentCount,
+          total: totalCount,
+          window:
+            s.start_time && s.end_time
+              ? `${Math.max(
+                  0,
+                  Math.round(
+                    (new Date(`1970-01-01T${s.end_time}`) -
+                      new Date(`1970-01-01T${s.start_time}`)) /
+                      60000,
+                  ),
+                )} min`
+              : "N/A",
+          status: s.attendance_open && s.is_active ? "Open" : "Closed",
+        };
+      });
+
+      setSessions(formattedSessions);
+    } catch (err) {
+      console.error("Error fetching sessions:", err);
+      setError(err.message || "Failed to load attendance sessions.");
+    } finally {
+      if (initialLoad) {
+        setLoading(false);
       }
     }
-    setActiveSession(null);
-    setIsModalOpen(false);
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchInitialData(true);
+    }, 0);
+
+    const refreshInterval = window.setInterval(
+      () => fetchInitialData(false),
+      15000,
+    );
+
+    return () => {
+      clearTimeout(timer);
+      window.clearInterval(refreshInterval);
+    };
+  }, [fetchInitialData]);
+
+  useEffect(() => {
+    if (!activeSession || !activeSession.expires_at) return;
+
+    const expiresTime = new Date(activeSession.expires_at).getTime();
+    const currentTime = Date.now();
+    const timeLeft = expiresTime - currentTime;
+
+    let timer;
+
+    if (timeLeft <= 0) {
+      timer = setTimeout(() => {
+        handleCloseSession(activeSession.id);
+      }, 0);
+    } else {
+      timer = setTimeout(() => {
+        handleCloseSession(activeSession.id);
+      }, timeLeft);
+    }
+
+    return () => clearTimeout(timer);
+  }, [activeSession, handleCloseSession]);
+
+  const handleSessionCreated = (data) => {
+    const createdSession = {
+      id: data.id,
+      course: data.courses?.course_code || "N/A",
+      type: data.session_type,
+      date: formatDate(data.session_date),
+      time: formatTime(data.start_time),
+      present: 0,
+      total: data.courses?.total_students || 0,
+      window: "15 min",
+      status: "Open",
+    };
+
+    setSessions((prev) => [createdSession, ...prev]);
+    setActiveSession({
+      id: data.id,
+      course: createdSession.course,
+      type: data.session_type,
+      expires_at: data.expires_at,
+    });
   };
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Sidebar Component */}
       <LecturerSidebar
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
       />
 
-      {/* Main Content Area */}
       <div className="flex min-h-screen min-w-0 flex-col lg:ml-64">
-        {/* Mobile Header Bar */}
+        {/* Mobile Header */}
         <div className="flex h-16 items-center justify-between border-b border-border bg-surface px-4 lg:hidden">
           <div className="flex items-center gap-3">
             <button
@@ -316,7 +389,6 @@ function LecturerSessions() {
           </div>
         </div>
 
-        {/* Main Content */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8">
           <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <h1 className="text-xl font-bold text-text-primary sm:text-2xl">
@@ -326,16 +398,27 @@ function LecturerSessions() {
             <button
               type="button"
               onClick={() => {
-                setError("");
-                setActiveSession(null);
+                if (activeSession) return;
                 setIsModalOpen(true);
               }}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90"
+              disabled={!!activeSession}
+              className={`inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-70 ${
+                activeSession
+                  ? "bg-emerald-600 hover:bg-emerald-700"
+                  : "bg-primary hover:opacity-90"
+              }`}
             >
-              <Plus size={18} />
-              Open Session
+              {!activeSession && <Plus size={18} />}
+              {activeSession ? "● Session Active" : "+ New Session"}
             </button>
           </div>
+
+          {/* Error Banner */}
+          {error && (
+            <div className="mb-4 rounded-lg bg-red-50 p-4 text-sm text-red-700 border border-red-200">
+              {error}
+            </div>
+          )}
 
           <section className="overflow-hidden rounded-xl border border-border bg-surface shadow-sm">
             {loading ? (
@@ -345,7 +428,10 @@ function LecturerSessions() {
               </div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[950px] text-left">
+                <table
+                  className="w-full text-left"
+                  style={{ minWidth: "950px" }}
+                >
                   <thead className="border-b border-border bg-background">
                     <tr>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">
@@ -448,194 +534,64 @@ function LecturerSessions() {
         </main>
       </div>
 
-      {/* Modal View */}
-      {isModalOpen && (
+      <NewSessionModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        courses={courses}
+        onSessionCreated={handleSessionCreated}
+      />
+
+      {/* Active Session Management Modal Banner */}
+      {activeSession && !isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-surface p-6 shadow-xl transition-all scrollbar-none">
-            {activeSession ? (
+          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-6 shadow-xl transition-all">
+            <div className="mb-6 flex items-start justify-between">
               <div>
-                <div className="text-left">
-                  <h2 className="text-xl font-bold text-text-primary">
-                    New Attendance Session
-                  </h2>
-                  <p className="mt-1 text-sm text-text-secondary">
-                    Open a time-limited session for students to mark attendance.
-                  </p>
-                </div>
-
-                <div className="my-8 flex flex-col items-center text-center">
-                  <div className="mb-5 flex h-20 w-20 items-center justify-center rounded-full border-2 border-emerald-500/30 bg-emerald-50 text-emerald-500">
-                    <Activity size={36} className="animate-pulse" />
-                  </div>
-
-                  <h3 className="text-xl font-bold text-text-primary">
-                    {activeSession.course} Session Active
-                  </h3>
-
-                  <p className="mt-1.5 text-sm text-text-secondary">
-                    {activeSession.type} - Students can now mark attendance
-                  </p>
-
-                  <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-emerald-100 px-3.5 py-1.5 text-xs font-semibold text-emerald-700">
-                    <Radio size={14} className="animate-pulse" />
-                    Live Session Open
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={handleCloseSession}
-                  className="w-full rounded-xl bg-red-600 py-3 text-center text-sm font-semibold text-white transition hover:bg-red-700 active:scale-[0.99]"
-                >
-                  Close Session
-                </button>
+                <h2 className="text-xl font-bold text-slate-900">
+                  Active Session
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Manage your currently live attendance session.
+                </p>
               </div>
-            ) : (
-              <div>
-                <div className="mb-6 flex items-center justify-between">
-                  <div>
-                    <h2 className="text-xl font-bold text-text-primary">
-                      Open Attendance Session
-                    </h2>
-                    <p className="mt-1 text-sm text-text-secondary">
-                      Create a new attendance session.
-                    </p>
-                  </div>
 
-                  <button
-                    type="button"
-                    onClick={() => setIsModalOpen(false)}
-                    className="rounded-lg p-2 text-text-secondary transition hover:bg-background"
-                  >
-                    <X size={20} />
-                  </button>
-                </div>
+              <button
+                type="button"
+                onClick={() => setActiveSession(null)}
+                className="rounded-lg p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                aria-label="Close modal banner"
+              >
+                <X size={20} />
+              </button>
+            </div>
 
-                <form onSubmit={handleSubmit} className="space-y-4">
-                  <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-primary">
-                      Course
-                    </label>
-                    <select
-                      name="courseId"
-                      value={formData.courseId}
-                      onChange={handleChange}
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
-                    >
-                      <option value="">Select course</option>
-                      {courses.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.code} - {c.title}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-primary">
-                      Session Type
-                    </label>
-                    <select
-                      name="type"
-                      value={formData.type}
-                      onChange={handleChange}
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
-                    >
-                      <option value="">Select type</option>
-                      <option value="Lecture">Lecture</option>
-                      <option value="Seminar">Seminar</option>
-                      <option value="Practical">Practical</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-primary">
-                      Date
-                    </label>
-                    <input
-                      type="date"
-                      name="date"
-                      value={formData.date}
-                      onChange={handleChange}
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-primary">
-                      Start Time
-                    </label>
-                    <input
-                      type="time"
-                      name="time"
-                      value={formData.time}
-                      onChange={handleChange}
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-primary">
-                      Attendance Window
-                    </label>
-                    <select
-                      name="window"
-                      value={formData.window}
-                      onChange={handleChange}
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
-                    >
-                      <option value="">Select window</option>
-                      <option value="10">10 minutes</option>
-                      <option value="15">15 minutes</option>
-                      <option value="20">20 minutes</option>
-                      <option value="30">30 minutes</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="mb-1.5 block text-sm font-medium text-text-primary">
-                      Total Students
-                    </label>
-                    <input
-                      type="number"
-                      name="total"
-                      value={formData.total}
-                      onChange={handleChange}
-                      min="1"
-                      placeholder="e.g. 45"
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
-                    />
-                  </div>
-
-                  {error && (
-                    <p className="rounded-lg bg-red-50 p-3 text-sm text-red-600">
-                      {error}
-                    </p>
-                  )}
-
-                  <div className="flex flex-col-reverse gap-3 pt-2 sm:flex-row sm:justify-end">
-                    <button
-                      type="button"
-                      onClick={() => setIsModalOpen(false)}
-                      className="rounded-lg border border-border px-4 py-2.5 text-sm font-semibold text-text-primary transition hover:bg-background"
-                    >
-                      Cancel
-                    </button>
-
-                    <button
-                      type="submit"
-                      disabled={submitting}
-                      className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
-                    >
-                      {submitting && (
-                        <Loader2 size={18} className="animate-spin" />
-                      )}
-                      {submitting ? "Opening..." : "Open Session"}
-                    </button>
-                  </div>
-                </form>
+            <div className="flex flex-col items-center justify-center py-4 text-center">
+              <div className="mb-4 flex h-20 w-20 items-center justify-center rounded-full bg-emerald-100 text-emerald-500">
+                <Activity size={38} className="animate-pulse" />
               </div>
-            )}
+
+              <h3 className="text-xl font-bold text-slate-900">
+                {activeSession.course} Session Active
+              </h3>
+
+              <p className="mt-1 text-sm text-slate-500">
+                {activeSession.type} - Students can now mark attendance
+              </p>
+
+              <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-emerald-100 px-4 py-1.5 text-xs font-semibold text-emerald-700">
+                <span className="h-2 w-2 rounded-full bg-emerald-500 animate-ping" />
+                Live Session Open
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleCloseSession(activeSession.id)}
+                className="mt-8 flex w-full items-center justify-center gap-2 rounded-xl bg-red-600 py-3.5 text-sm font-semibold text-white shadow-md transition hover:bg-red-700"
+              >
+                <Radio size={18} />
+                Close Session
+              </button>
+            </div>
           </div>
         </div>
       )}

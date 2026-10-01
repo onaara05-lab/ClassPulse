@@ -1,12 +1,27 @@
 import { useState, useEffect, useCallback } from "react";
+import { Menu } from "lucide-react";
 import StudentSidebar from "../components/Student/StudentSidebar";
 import { supabase } from "../supabaseClient";
-import { LuLoader, LuUser } from "react-icons/lu";
+import { LuLoader, LuUser, LuSave, LuX } from "react-icons/lu";
+import { MdEdit } from "react-icons/md";
+import logo from "../assets/classpulse-logo.png";
 
 function StudentProfile() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+  
+  // Edit mode states
+  const [isEditing, setIsEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [formData, setFormData] = useState({
+    full_name: "",
+    matric_number: "",
+    department: "",
+    faculty: "",
+    level: "",
+    semester: "",
+  });
 
   const fetchStudentProfile = useCallback(async () => {
     try {
@@ -20,20 +35,25 @@ function StudentProfile() {
 
       if (userError || !user) throw userError || new Error("User not found");
 
-      // 2. Fetch profile from Supabase 'students' or 'profiles' table
+      // Student and lecturer account details are stored in the shared profiles table.
       const { data, error } = await supabase
-        .from("students")
-        .select("*")
+        .from("profiles")
+        .select("full_name, matric_number, department, faculty, level, semester")
         .eq("id", user.id)
         .single();
 
       if (error && error.code !== "PGRST116") {
-        // Log query error if it isn't simply a missing record
         console.error("Supabase profile fetch error:", error);
       }
 
-      // Compute initials from full name or fallback
       const fullName = data?.full_name || user.user_metadata?.full_name || "Student Name";
+      const matricNumber = data?.matric_number || user.user_metadata?.matric_number || "";
+      const department = data?.department || user.user_metadata?.department || "";
+      const faculty = data?.faculty || user.user_metadata?.faculty || "";
+      const level = data?.level || user.user_metadata?.level || "";
+      const semester = data?.semester || user.user_metadata?.semester || "";
+
+      // Compute initials from full name or fallback
       const nameParts = fullName.trim().split(" ");
       const initials =
         nameParts.length >= 2
@@ -42,14 +62,24 @@ function StudentProfile() {
 
       setProfile({
         name: fullName,
-        matricNumber: data?.matric_number || user.user_metadata?.matric_number || "N/A",
+        matricNumber: matricNumber || "N/A",
         role: "Student",
         initials,
         email: user.email || "N/A",
-        department: data?.department || "Computer Science",
-        faculty: data?.faculty || "Computing",
-        level: data?.level ? `${data.level} Level` : "300 Level",
-        semester: data?.semester || "Second Semester 2025/2026",
+        department: department || "N/A",
+        faculty: faculty || "N/A",
+        level: level ? `${String(level).replace(/\s*level$/i, "")} Level` : "N/A",
+        semester: semester || "N/A",
+      });
+
+      // Populate form state for editing
+      setFormData({
+        full_name: fullName,
+        matric_number: matricNumber,
+        department: department,
+        faculty: faculty,
+        level: level,
+        semester: semester,
       });
     } catch (err) {
       console.error("Error loading student profile:", err);
@@ -64,6 +94,43 @@ function StudentProfile() {
     })();
   }, [fetchStudentProfile]);
 
+  const handleUpdateProfile = async (e) => {
+    e.preventDefault();
+    try {
+      setSaving(true);
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) throw new Error("No authenticated user found.");
+
+      const updates = {
+        id: user.id,
+        full_name: formData.full_name,
+        matric_number: formData.matric_number,
+        department: formData.department,
+        faculty: formData.faculty,
+        level: formData.level,
+        semester: formData.semester,
+        updated_at: new Date(),
+      };
+
+      const { error } = await supabase.from("profiles").upsert(updates);
+
+      if (error) throw error;
+
+      // Refresh local profile view after successful save
+      await fetchStudentProfile();
+      setIsEditing(false);
+      alert("Profile updated successfully!");
+    } catch (err) {
+      console.error("Error updating profile:", err);
+      alert("Error updating profile: " + err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background">
       {/* Sidebar */}
@@ -73,39 +140,54 @@ function StudentProfile() {
       />
 
       {/* Main Content */}
-      <main className="min-h-screen lg:ml-64">
-        <div className="p-4 sm:p-6 lg:p-8">
-          {/* Header */}
-          <div className="mb-6 flex items-center justify-between">
-            <h1 className="text-xl font-bold text-slate-900 sm:text-2xl">
-              Profile
-            </h1>
-
-            {/* Mobile Sidebar Toggle Button */}
+      <div className="flex min-h-screen min-w-0 flex-col lg:ml-64">
+        <div className="flex h-16 items-center justify-between border-b border-border bg-surface px-4 lg:hidden">
+          <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={() => setIsSidebarOpen(true)}
-              className="rounded-lg border border-slate-200 bg-white p-2 text-slate-600 hover:bg-slate-50 lg:hidden"
+              className="rounded-lg p-2 text-text-secondary hover:bg-background hover:text-text-primary"
+              aria-label="Open sidebar"
             >
-              <svg
-                className="h-6 w-6"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M4 6h16M4 12h16M4 18h16"
-                />
-              </svg>
+              <Menu size={22} />
             </button>
+            <div className="flex items-center gap-2">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600">
+                <img src={logo} alt="ClassPulse" className="h-14 w-auto object-contain sm:h-16" />
+              </div>
+              <span className="text-lg font-bold text-text-primary">ClassPulse</span>
+            </div>
+          </div>
+        </div>
+
+        <main className="flex-1 p-4 sm:p-6 lg:p-8">
+          {/* Header */}
+          <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                <LuUser size={23} />
+              </div>
+              <div>
+                <h1 className="text-xl font-bold text-text-primary sm:text-2xl">Profile</h1>
+                <p className="mt-1 text-sm text-text-secondary">
+                  View and manage your student profile details and account information.
+                </p>
+              </div>
+            </div>
+
+            {profile && !loading && !isEditing && (
+              <button
+                onClick={() => setIsEditing(true)}
+                className="flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 transition"
+              >
+                <MdEdit size={16} /> Edit Profile
+              </button>
+            )}
           </div>
 
           {/* Profile Card Container */}
           {loading ? (
-            <div className="flex max-w-xl flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white p-12 text-slate-500 shadow-sm">
+            <div className="flex max-w-2xl flex-col items-center justify-center rounded-2xl border border-border bg-surface p-12 text-text-secondary shadow-sm">
               <LuLoader className="mb-3 h-8 w-8 animate-spin text-blue-600" />
               <p className="text-sm font-medium">Loading profile...</p>
             </div>
@@ -114,68 +196,157 @@ function StudentProfile() {
               <LuUser className="mb-3 h-10 w-10 text-slate-400" />
               <p className="text-sm font-medium">Unable to load profile information.</p>
             </div>
+          ) : isEditing ? (
+            /* EDIT FORM VIEW */
+            <form onSubmit={handleUpdateProfile} className="max-w-2xl rounded-2xl border border-border bg-surface p-6 shadow-sm sm:p-8 space-y-5">
+              <div className="flex items-center justify-between border-b border-border pb-4">
+                <h2 className="text-lg font-bold text-text-primary">Edit Profile Information</h2>
+                <button
+                  type="button"
+                  onClick={() => setIsEditing(false)}
+                  className="rounded-lg p-1.5 text-text-secondary hover:bg-background hover:text-text-primary"
+                >
+                  <LuX size={20} />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-text-secondary mb-1">Full Name</label>
+                  <input
+                    type="text"
+                    value={formData.full_name}
+                    onChange={(e) => setFormData({ ...formData, full_name: e.target.value })}
+                    className="w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-text-secondary mb-1">Matric Number</label>
+                  <input
+                    type="text"
+                    value={formData.matric_number}
+                    onChange={(e) => setFormData({ ...formData, matric_number: e.target.value })}
+                    placeholder="e.g. CSC/2023/001"
+                    className="w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-text-secondary mb-1">Department</label>
+                  <input
+                    type="text"
+                    value={formData.department}
+                    onChange={(e) => setFormData({ ...formData, department: e.target.value })}
+                    placeholder="e.g. Computer Science"
+                    className="w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold uppercase tracking-wider text-text-secondary mb-1">Faculty</label>
+                  <input
+                    type="text"
+                    value={formData.faculty}
+                    onChange={(e) => setFormData({ ...formData, faculty: e.target.value })}
+                    placeholder="e.g. Science"
+                    className="w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wider text-text-secondary mb-1">Level</label>
+                    <input
+                      type="text"
+                      value={formData.level}
+                      onChange={(e) => setFormData({ ...formData, level: e.target.value })}
+                      placeholder="e.g. 300"
+                      className="w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold uppercase tracking-wider text-text-secondary mb-1">Semester</label>
+                    <input
+                      type="text"
+                      value={formData.semester}
+                      onChange={(e) => setFormData({ ...formData, semester: e.target.value })}
+                      placeholder="e.g. First"
+                      className="w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-border">
+                <button
+                  type="button"
+                  onClick={() => setIsEditing(false)}
+                  className="rounded-xl border border-border px-4 py-2.5 text-sm font-semibold text-text-secondary hover:bg-background transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 transition disabled:opacity-50"
+                >
+                  {saving ? <LuLoader className="animate-spin" size={16} /> : <LuSave size={16} />}
+                  {saving ? "Saving..." : "Save Changes"}
+                </button>
+              </div>
+            </form>
           ) : (
-            <div className="max-w-xl overflow-hidden rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+            /* DISPLAY PROFILE VIEW */
+            <div className="max-w-2xl overflow-hidden rounded-2xl border border-border bg-surface p-6 shadow-sm sm:p-8">
               {/* Header / Avatar Info */}
-              <div className="flex items-center gap-4 border-b border-slate-100 pb-6">
+              <div className="flex items-center gap-4 border-b border-border pb-6">
                 <div className="flex h-14 w-14 items-center justify-center rounded-full bg-blue-600 text-lg font-bold text-white shadow-sm sm:h-16 sm:w-16 sm:text-xl">
                   {profile.initials}
                 </div>
 
                 <div className="space-y-0.5">
-                  <h2 className="text-lg font-bold text-slate-900">
-                    {profile.name}
-                  </h2>
-                  <p className="text-xs font-medium text-slate-400">
-                    {profile.matricNumber}
-                  </p>
-                  <span className="inline-block rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-semibold text-blue-600">
+                  <h2 className="text-lg font-bold text-text-primary">{profile.name}</h2>
+                  <p className="text-xs text-text-secondary">Matric Number: {profile.matricNumber}</p>
+                  <span className="mt-1.5 inline-block rounded-full bg-blue-50 px-3 py-0.5 text-xs font-semibold text-blue-600">
                     {profile.role}
                   </span>
                 </div>
               </div>
 
               {/* Profile Details List */}
-              <div className="mt-6 space-y-4 text-sm">
-                <div className="flex items-center justify-between py-1">
-                  <span className="font-medium text-slate-400">Email</span>
-                  <span className="font-semibold text-slate-800">
-                    {profile.email}
-                  </span>
+              <div className="divide-y divide-border border-t border-border text-sm">
+                <div className="flex items-center justify-between gap-4 py-4">
+                  <span className="text-text-secondary">Email</span>
+                  <span className="text-right font-semibold text-text-primary">{profile.email}</span>
                 </div>
 
-                <div className="flex items-center justify-between py-1">
-                  <span className="font-medium text-slate-400">Department</span>
-                  <span className="font-semibold text-slate-800">
-                    {profile.department}
-                  </span>
+                <div className="flex items-center justify-between gap-4 py-4">
+                  <span className="text-text-secondary">Department</span>
+                  <span className="text-right font-semibold text-text-primary">{profile.department}</span>
                 </div>
 
-                <div className="flex items-center justify-between py-1">
-                  <span className="font-medium text-slate-400">Faculty</span>
-                  <span className="font-semibold text-slate-800">
-                    {profile.faculty}
-                  </span>
+                <div className="flex items-center justify-between gap-4 py-4">
+                  <span className="text-text-secondary">Faculty</span>
+                  <span className="text-right font-semibold text-text-primary">{profile.faculty}</span>
                 </div>
 
-                <div className="flex items-center justify-between py-1">
-                  <span className="font-medium text-slate-400">Level</span>
-                  <span className="font-semibold text-slate-800">
-                    {profile.level}
-                  </span>
+                <div className="flex items-center justify-between gap-4 py-4">
+                  <span className="text-text-secondary">Level</span>
+                  <span className="text-right font-semibold text-text-primary">{profile.level}</span>
                 </div>
 
-                <div className="flex items-center justify-between py-1">
-                  <span className="font-medium text-slate-400">Semester</span>
-                  <span className="font-semibold text-slate-800">
-                    {profile.semester}
-                  </span>
+                <div className="flex items-center justify-between gap-4 py-4">
+                  <span className="text-text-secondary">Semester</span>
+                  <span className="text-right font-semibold text-text-primary">{profile.semester}</span>
                 </div>
               </div>
             </div>
           )}
-        </div>
-      </main>
+        </main>
+      </div>
     </div>
   );
 }

@@ -132,38 +132,69 @@ function LecturerRegister() {
       return;
     }
 
+    if (!supabase) {
+      setErrorMessage(
+        "Supabase client not initialized. Check your .env file and restart the server."
+      );
+      return;
+    }
+
     try {
       setLoading(true);
 
+      // 1. Create account in Supabase Auth
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: formData.email.trim(),
         password: formData.password,
-        options: {
-          data: {
-            full_name: formData.fullName.trim(),
-            staff_id: formData.staffId.trim(),
-            faculty: formData.faculty.trim(),
-            department: formData.department.trim(),
-            academic_session: formData.academicSession,
-            semester: formData.semester,
-            courses_taught_count: formData.coursesTaughtCount,
-            role: "lecturer",
-          },
-        },
       });
 
-      if (authError) throw authError;
+      if (authError) {
+        console.error("Full Auth Error:", authError);
+        setErrorMessage(authError.message);
+        return;
+      }
 
-      if (authData?.session) {
+      const user = authData?.user;
+
+      if (!user) {
+        setErrorMessage("Signup failed. Please try again.");
+        return;
+      }
+
+      // 2. Explicitly insert lecturer profile data into public.profiles table
+      const { error: profileError } = await supabase.from("profiles").insert([
+        {
+          id: user.id,
+          full_name: formData.fullName.trim(),
+          staff_id: formData.staffId.trim(),
+          email: formData.email.trim(),
+          faculty: formData.faculty.trim(),
+          department: formData.department.trim(),
+          academic_session: formData.academicSession,
+          semester: formData.semester,
+          courses_taught_count: formData.coursesTaughtCount,
+          role: "lecturer",
+        },
+      ]);
+
+      if (profileError) {
+        console.error("Profile Insert Error:", profileError);
+        setErrorMessage(`Database error saving profile: ${profileError.message}`);
+        return;
+      }
+
+      // 3. Handle session / confirmation redirect
+      if (authData.session) {
         alert("Lecturer account created successfully!");
         navigate("/lecturer/dashboard");
       } else {
         alert(
-          "Registration successful! Please check your email to confirm your account.",
+          "Registration successful! Please check your email to confirm your account before logging in."
         );
         navigate("/login");
       }
 
+      // Clear Form Fields
       setFormData({
         fullName: "",
         staffId: "",
@@ -178,9 +209,7 @@ function LecturerRegister() {
       });
     } catch (error) {
       console.error("Registration error:", error);
-      setErrorMessage(
-        error.message || "Something went wrong. Please try again.",
-      );
+      setErrorMessage("An unexpected error occurred. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -314,7 +343,7 @@ function LecturerRegister() {
                       <option key={facultyName} value={facultyName}>
                         {facultyName}
                       </option>
-                    ),
+                    )
                   )}
                 </select>
               </div>

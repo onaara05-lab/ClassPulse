@@ -6,30 +6,63 @@ function Login() {
   const navigate = useNavigate();
 
   const handleSubmit = async (e) => {
-  e.preventDefault();
+    e.preventDefault();
 
-  const formData = new FormData(e.currentTarget);
+    const formData = new FormData(e.currentTarget);
+    const email = formData.get("email");
+    const password = formData.get("password");
+    const selectedRole = formData.get("role"); // "student" or "lecturer"
 
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email: formData.get("email"),
-    password: formData.get("password"),
-  });
+    // 1. Authenticate user with Supabase Auth
+    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
 
-  if (error) {
-    alert(error.message);
-    return;
-  }
+    if (authError) {
+      alert(authError.message);
+      return;
+    }
 
-  const role = data.user.user_metadata.role;
+    const user = authData?.user;
 
-  if (role === "student") {
-    navigate("/student/dashboard");
-  } else if (role === "lecturer") {
-    navigate("/lecturer/dashboard");
-  } else {
-    alert("Your account does not have a valid role.");
-  }
-};
+    if (!user) {
+      alert("Login failed. Please try again.");
+      return;
+    }
+
+    // 2. Fetch the user's role from the public.profiles table
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("role")
+      .eq("id", user.id)
+      .single();
+
+    if (profileError || !profile) {
+      alert("User profile not found in the database.");
+      await supabase.auth.signOut();
+      return;
+    }
+
+    const dbRole = profile.role;
+
+    // 3. Verify if the database role matches what they selected on the UI
+    if (dbRole !== selectedRole) {
+      alert(`This account is registered as a ${dbRole}, but you tried to login as a ${selectedRole}. Please select the correct role.`);
+      await supabase.auth.signOut();
+      return;
+    }
+
+    // 4. Redirect based on role
+    if (dbRole === "student") {
+      navigate("/student/dashboard");
+    } else if (dbRole === "lecturer") {
+      navigate("/lecturer/dashboard");
+    } else {
+      alert("Your account does not have a valid role.");
+      await supabase.auth.signOut();
+    }
+  };
 
   return (
     <main className="min-h-screen bg-background px-6 py-10 font-inter">

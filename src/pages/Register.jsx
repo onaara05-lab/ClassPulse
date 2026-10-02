@@ -106,7 +106,6 @@ function Register() {
     const { name, value } = e.target;
 
     if (name === "faculty") {
-      // If faculty changes, update faculty and reset department selection
       setFormData((previousData) => ({
         ...previousData,
         faculty: value,
@@ -132,7 +131,7 @@ function Register() {
 
     if (!supabase) {
       setErrorMessage(
-        "Supabase client not initialized. Check your .env file and restart the server.",
+        "Supabase client not initialized. Check your .env file and restart the server."
       );
       return;
     }
@@ -140,22 +139,10 @@ function Register() {
     try {
       setLoading(true);
 
-      // 1. Create account in Supabase Auth & pass metadata matching the database columns
+      // 1. Create account in Supabase Auth
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: formData.email,
         password: formData.password,
-        options: {
-          data: {
-            full_name: formData.fullName,
-            matric_number: formData.matricNumber,
-            department: formData.department,
-            faculty: formData.faculty,
-            academic_session: formData.academicSession,
-            level: formData.level,
-            semester: formData.semester,
-            role: "student",
-          },
-        },
       });
 
       if (authError) {
@@ -164,12 +151,41 @@ function Register() {
         return;
       }
 
-      // 2. Handle session / confirmation redirect
+      const user = authData?.user;
+
+      if (!user) {
+        setErrorMessage("Signup failed. Please try again.");
+        return;
+      }
+
+      // 2. Explicitly insert user profile data into public.profiles table
+      const { error: profileError } = await supabase.from("profiles").insert([
+        {
+          id: user.id,
+          full_name: formData.fullName,
+          matric_number: formData.matricNumber,
+          email: formData.email,
+          faculty: formData.faculty,
+          department: formData.department,
+          academic_session: formData.academicSession,
+          level: formData.level,
+          semester: formData.semester,
+          role: "student",
+        },
+      ]);
+
+      if (profileError) {
+        console.error("Profile Insert Error:", profileError);
+        setErrorMessage(`Database error saving profile: ${profileError.message}`);
+        return;
+      }
+
+      // 3. Handle session / confirmation redirect
       if (authData.session) {
         navigate("/student/dashboard");
       } else {
         alert(
-          "Registration successful! Please check your email to verify your account before logging in.",
+          "Registration successful! Please check your email to verify your account before logging in."
         );
         navigate("/login");
       }
@@ -338,7 +354,7 @@ function Register() {
                       <option key={facultyName} value={facultyName}>
                         {facultyName}
                       </option>
-                    ),
+                    )
                   )}
                 </select>
               </div>

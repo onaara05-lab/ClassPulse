@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { Link } from "react-router-dom";
 import { LuBell, LuMenu, LuActivity } from "react-icons/lu";
 import { X, Loader2, Clock, Calendar } from "lucide-react";
 import { supabase } from "../../supabaseClient";
@@ -780,18 +781,21 @@ function LecturerHeader({
 
             <div className="hidden h-8 w-px bg-border sm:block" />
 
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-bold text-white">
+            <Link
+              to="/lecturer/profile"
+              className="flex items-center gap-3 group transition rounded-xl p-1.5 hover:bg-background"
+            >
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary text-sm font-bold text-white shadow-sm transition group-hover:scale-105">
                 {userProfile.initials}
               </div>
 
-              <div className="hidden sm:block">
-                <p className="text-sm font-semibold text-text-primary">
+              <div className="hidden sm:block text-left">
+                <p className="text-sm font-semibold text-text-primary group-hover:text-primary transition">
                   {userProfile.name}
                 </p>
                 <p className="text-xs text-text-secondary">Lecturer</p>
               </div>
-            </div>
+            </Link>
           </div>
         </div>
       </header>

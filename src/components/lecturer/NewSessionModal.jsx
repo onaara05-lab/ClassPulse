@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ChevronDown, X, Loader2, } from "lucide-react";
+import { ChevronDown, X, Loader2 } from "lucide-react";
 import { supabase } from "../../supabaseClient";
 
 export default function NewSessionModal({
@@ -49,10 +49,11 @@ export default function NewSessionModal({
           const courseIds = coursesData.map((c) => c.id);
 
           // Fetch enrollments to calculate student counts per course
-          const { data: enrollmentsData, error: enrollmentsError } = await supabase
-            .from("enrollments")
-            .select("course_id")
-            .in("course_id", courseIds);
+          const { data: enrollmentsData, error: enrollmentsError } =
+            await supabase
+              .from("enrollments")
+              .select("course_id")
+              .in("course_id", courseIds);
 
           if (enrollmentsError) throw enrollmentsError;
 
@@ -73,7 +74,10 @@ export default function NewSessionModal({
             setCourses(mappedCourses);
 
             if (mappedCourses.length > 0) {
-              setFormData((prev) => ({ ...prev, courseId: mappedCourses[0].id }));
+              setFormData((prev) => ({
+                ...prev,
+                courseId: mappedCourses[0].id,
+              }));
             }
           }
         } else if (isMounted) {
@@ -180,7 +184,7 @@ export default function NewSessionModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-      <div className="relative w-full max-w-[480px] overflow-hidden rounded-2xl bg-white p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+      <div className="relative w-full max-w-lg sm:max-w-2xl overflow-hidden rounded-2xl bg-white p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
         {/* Close Button */}
         <button
           onClick={onClose}
@@ -228,7 +232,8 @@ export default function NewSessionModal({
                 </option>
                 {courses.map((course) => (
                   <option key={course.id} value={course.id}>
-                    {course.code} - {course.title} ({course.studentCount ?? 0} {course.studentCount === 1 ? "student" : "students"})
+                    {course.code} - {course.title} ({course.studentCount ?? 0}{" "}
+                    {course.studentCount === 1 ? "student" : "students"})
                   </option>
                 ))}
               </select>

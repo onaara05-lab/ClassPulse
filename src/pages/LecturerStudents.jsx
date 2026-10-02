@@ -23,7 +23,6 @@ function LecturerStudents() {
       try {
         setLoading(true);
 
-        // 1. Get logged-in lecturer
         const {
           data: { user },
         } = await supabase.auth.getUser();
@@ -34,18 +33,11 @@ function LecturerStudents() {
         }
 
         const resolveLecturerCourseIds = async () => {
-          const { data: profileData, error: profileError } = await supabase
+          const { data: profileData } = await supabase
             .from("profiles")
             .select("full_name")
             .eq("id", user.id)
             .maybeSingle();
-
-          if (profileError) {
-            console.warn(
-              "Profile fallback lookup failed:",
-              profileError.message,
-            );
-          }
 
           const candidateNames = [
             profileData?.full_name,
@@ -56,18 +48,10 @@ function LecturerStudents() {
             .map((value) => value?.trim())
             .filter(Boolean);
 
-          const { data: lecturerCourses = [], error: directCoursesError } =
-            await supabase
-              .from("courses")
-              .select("id, course_code")
-              .eq("lecturer_id", user.id);
-
-          if (directCoursesError) {
-            console.warn(
-              "Direct lecturer course lookup failed:",
-              directCoursesError.message,
-            );
-          }
+          const { data: lecturerCourses = [] } = await supabase
+            .from("courses")
+            .select("id, course_code")
+            .eq("lecturer_id", user.id);
 
           let courseIds = [
             ...new Set((lecturerCourses || []).map((course) => course.id)),
@@ -76,19 +60,10 @@ function LecturerStudents() {
           for (const candidateName of [...new Set(candidateNames)]) {
             if (courseIds.length > 0) break;
 
-            const { data: namedCourses = [], error: namedCoursesError } =
-              await supabase
-                .from("courses")
-                .select("id, course_code")
-                .eq("lecturer_name", candidateName);
-
-            if (namedCoursesError) {
-              console.warn(
-                "Fallback lecturer-name lookup failed:",
-                namedCoursesError.message,
-              );
-              continue;
-            }
+            const { data: namedCourses = [] } = await supabase
+              .from("courses")
+              .select("id, course_code")
+              .eq("lecturer_name", candidateName);
 
             courseIds = [
               ...new Set([
@@ -109,62 +84,71 @@ function LecturerStudents() {
           return;
         }
 
-        // 2. Fetch course details to build code lookup map
-        const { data: coursesData, error: coursesError } = await supabase
+        const { data: coursesData } = await supabase
           .from("courses")
           .select("id, course_code")
           .in("id", courseIds);
-
-        if (coursesError) throw coursesError;
 
         const courseMap = {};
         (coursesData || []).forEach((c) => {
           courseMap[c.id] = c.course_code || "N/A";
         });
 
-        // 3. Fetch enrollments for these courses including student profiles
-        const { data: enrollmentsData, error: enrollmentsError } =
-          await supabase
-            .from("enrollments")
-            .select(
-              `
-              id,
-              course_id,
-              student_id,
-              students:student_id (
-                id,
-                full_name,
-                matric_number
-              )
-            `,
-            )
-            .in("course_id", courseIds);
+        // Fetch enrollments
+        const { data: enrollmentsData } = await supabase
+          .from("enrollments")
+          .select("id, course_id, student_id")
+          .in("course_id", courseIds);
 
-        if (enrollmentsError) throw enrollmentsError;
+        const studentIds = [
+          ...new Set((enrollmentsData || []).map((e) => e.student_id)),
+        ];
 
-        // 4. Fetch class sessions for these courses
-        const { data: sessions, error: sessionsError } = await supabase
+        // Fetch sessions
+        const { data: sessions } = await supabase
           .from("class_sessions")
           .select("id, course_id")
           .in("course_id", courseIds);
-
-        if (sessionsError) throw sessionsError;
 
         const sessionToCourse = new Map(
           (sessions || []).map((session) => [session.id, session.course_id]),
         );
         const sessionIds = [...sessionToCourse.keys()];
 
-        // 5. Fetch attendance records
-        const { data: attendanceRecords, error: attendanceError } =
-          sessionIds.length > 0
-            ? await supabase
-                .from("attendance_records")
-                .select("student_id, class_session_id, status")
-                .in("class_session_id", sessionIds)
-            : { data: [], error: null };
+        let attendanceRecords = [];
+        if (sessionIds.length > 0) {
+          const { data: attData } = await supabase
+            .from("attendance_records")
+            .select("student_id, class_session_id, status")
+            .in("class_session_id", sessionIds);
 
-        if (attendanceError) throw attendanceError;
+          attendanceRecords = attData || [];
+        }
+
+        attendanceRecords.forEach((r) => {
+          if (r.student_id) studentIds.push(r.student_id);
+        });
+        const uniqueStudentIds = [...new Set(studentIds)].filter(Boolean);
+
+        // Clean profile lookup targeting exact columns: id, full_name, matric_number
+        let profileMap = new Map();
+        if (uniqueStudentIds.length > 0) {
+          const { data: profilesData, error: profileError } = await supabase
+            .from("profiles")
+            .select("id, full_name, matric_number")
+            .in("id", uniqueStudentIds);
+
+          if (profileError) {
+            console.error("Profile fetch error:", profileError.message);
+          }
+
+          (profilesData || []).forEach((p) => {
+            profileMap.set(p.id, {
+              full_name: p.full_name || "Unknown Student",
+              matric_number: p.matric_number || "N/A",
+            });
+          });
+        }
 
         const sessionsByCourse = new Map();
         (sessions || []).forEach(({ course_id }) => {
@@ -176,7 +160,7 @@ function LecturerStudents() {
 
         const presentByStudentCourse = new Map();
         const seenAttendance = new Set();
-        (attendanceRecords || []).forEach((record) => {
+        attendanceRecords.forEach((record) => {
           const status = normalizeAttendanceStatus(record.status);
           if (status !== "present" && status !== "late") return;
 
@@ -193,40 +177,24 @@ function LecturerStudents() {
         });
 
         let baseStudentList = [];
-
         if (enrollmentsData && enrollmentsData.length > 0) {
           baseStudentList = enrollmentsData.map((e) => ({
             id: e.id,
             course_id: e.course_id,
             student_id: e.student_id,
-            student: e.students,
+            student: profileMap.get(e.student_id) || {
+              full_name: "Unknown Student",
+              matric_number: "N/A",
+            },
           }));
         } else {
-          // Fallback: If enrollments table is empty, collect unique students from attendance records
           const uniqueAttendeeKeys = new Set();
-          (attendanceRecords || []).forEach((record) => {
+          attendanceRecords.forEach((record) => {
             const courseId = sessionToCourse.get(record.class_session_id);
             if (record.student_id && courseId) {
               uniqueAttendeeKeys.add(`${record.student_id}:${courseId}`);
             }
           });
-
-          const uniqueStudentIds = [
-            ...new Set(
-              Array.from(uniqueAttendeeKeys).map((k) => k.split(":")[0]),
-            ),
-          ];
-
-          let profiles = [];
-          if (uniqueStudentIds.length > 0) {
-            const { data: profileData } = await supabase
-              .from("profiles")
-              .select("id, full_name, matric_number")
-              .in("id", uniqueStudentIds);
-            profiles = profileData || [];
-          }
-
-          const profileMap = new Map(profiles.map((p) => [p.id, p]));
 
           Array.from(uniqueAttendeeKeys).forEach((key) => {
             const [studentId, courseId] = key.split(":");
@@ -235,7 +203,6 @@ function LecturerStudents() {
               course_id: courseId,
               student_id: studentId,
               student: profileMap.get(studentId) || {
-                id: studentId,
                 full_name: "Unknown Student",
                 matric_number: "N/A",
               },
@@ -243,15 +210,16 @@ function LecturerStudents() {
           });
         }
 
-        // Format student items for the table
         const formattedStudents = baseStudentList.map((item) => {
           const studentName = item.student?.full_name || "Unknown Student";
-          const initials = studentName
-            .split(" ")
-            .map((n) => n[0])
-            .join("")
-            .substring(0, 2)
-            .toUpperCase();
+          const initials = studentName !== "Unknown Student"
+            ? studentName
+                .split(" ")
+                .map((n) => n[0])
+                .join("")
+                .substring(0, 2)
+                .toUpperCase()
+            : "US";
 
           const totalSessions = sessionsByCourse.get(item.course_id) || 0;
           const presentCount =
@@ -293,10 +261,7 @@ function LecturerStudents() {
     };
 
     fetchStudentsData();
-    const refreshId = window.setInterval(fetchStudentsData, 8000);
-
-    return () => window.clearInterval(refreshId);
-   }, []);
+  }, []);
 
   const filteredStudents = students.filter((student) => {
     const matchesSearch =
@@ -311,15 +276,12 @@ function LecturerStudents() {
 
   return (
     <div id="lecturerStudent" className="min-h-screen bg-background">
-      {/* Sidebar Component */}
       <LecturerSidebar
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
       />
 
-      {/* Main Content Area */}
       <div className="flex min-h-screen min-w-0 flex-col lg:ml-64">
-        {/* Mobile Header Bar */}
         <div className="flex h-16 items-center justify-between border-b border-border bg-surface px-4 lg:hidden">
           <div className="flex items-center gap-3">
             <button
@@ -346,16 +308,12 @@ function LecturerStudents() {
           </div>
         </div>
 
-        {/* Main Content */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8">
-          {/* Page Title */}
           <h1 className="mb-6 text-xl font-bold text-text-primary sm:text-2xl">
             Students
           </h1>
 
-          {/* Search and Filters */}
           <div className="mb-5 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-            {/* Search Bar */}
             <div className="relative w-full xl:max-w-xl">
               <Search
                 size={18}
@@ -371,7 +329,6 @@ function LecturerStudents() {
               />
             </div>
 
-            {/* Filter Buttons */}
             <div className="flex flex-wrap gap-2">
               {filters.map((filter) => (
                 <button
@@ -390,7 +347,6 @@ function LecturerStudents() {
             </div>
           </div>
 
-          {/* Students Table */}
           <section className="overflow-hidden rounded-xl border border-border bg-surface shadow-sm">
             {loading ? (
               <div className="flex items-center justify-center py-20 text-text-secondary">
@@ -399,22 +355,22 @@ function LecturerStudents() {
               </div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[212.5rem] text-left">
+                <table className="w-full min-w-full text-left">
                   <thead className="border-b border-border bg-background">
                     <tr>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                      <th className="px-6 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">
                         Student
                       </th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                      <th className="px-6 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">
                         Matric No.
                       </th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                      <th className="px-6 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">
                         Course
                       </th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                      <th className="px-6 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">
                         Attendance
                       </th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                      <th className="px-6 py-3 text-xs font-semibold uppercase tracking-wide text-text-secondary">
                         Status
                       </th>
                     </tr>
@@ -441,7 +397,7 @@ function LecturerStudents() {
                             key={student.id}
                             className="transition hover:bg-background"
                           >
-                            <td className="px-4 py-3">
+                            <td className="px-6 py-4">
                               <div className="flex items-center gap-3">
                                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 text-[10px] font-semibold text-primary">
                                   {student.initials}
@@ -453,17 +409,17 @@ function LecturerStudents() {
                               </div>
                             </td>
 
-                            <td className="px-4 py-3 text-xs text-text-secondary">
+                            <td className="px-6 py-4 text-xs text-text-secondary font-medium">
                               {student.matricNumber}
                             </td>
 
-                            <td className="px-4 py-3 text-sm text-text-primary">
+                            <td className="px-6 py-4 text-sm text-text-primary">
                               {student.course}
                             </td>
 
-                            <td className="px-4 py-3">
+                            <td className="px-6 py-4">
                               <div className="flex items-center gap-2">
-                                <div className="h-1.5 w-16 overflow-hidden rounded-full bg-gray-200">
+                                <div className="h-1.5 w-24 overflow-hidden rounded-full bg-gray-200">
                                   <div
                                     className={`h-full rounded-full ${attendanceColor}`}
                                     style={{
@@ -478,7 +434,7 @@ function LecturerStudents() {
                               </div>
                             </td>
 
-                            <td className="px-4 py-3">
+                            <td className="px-6 py-4">
                               <span
                                 className={`inline-flex rounded-full px-3 py-1 text-[10px] font-semibold ${
                                   statusStyles[student.status] ||
@@ -495,7 +451,7 @@ function LecturerStudents() {
                       <tr>
                         <td
                           colSpan="5"
-                          className="px-4 py-10 text-center text-sm text-text-secondary"
+                          className="px-6 py-10 text-center text-sm text-text-secondary"
                         >
                           No enrolled students found.
                         </td>
@@ -506,9 +462,8 @@ function LecturerStudents() {
               </div>
             )}
 
-            {/* Footer */}
             {!loading && (
-              <div className="border-t border-border px-4 py-3">
+              <div className="border-t border-border px-6 py-3">
                 <p className="text-xs text-text-secondary">
                   Showing {filteredStudents.length} students
                 </p>

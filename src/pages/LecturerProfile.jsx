@@ -79,20 +79,14 @@ function LecturerProfile() {
             "Lecturer";
 
           const resolvedStaffId =
-            profile?.staff_id ||
-            userMetadata.staff_id ||
-            "N/A";
+            profile?.staff_id || userMetadata.staff_id || "N/A";
 
           const resolvedRole = profile?.role || userMetadata.role || "lecturer";
 
-          const resolvedFaculty =
-            userMetadata.faculty ||
-            "N/A";
+          const resolvedFaculty = userMetadata.faculty || "N/A";
 
           const resolvedDepartment =
-            profile?.department ||
-            userMetadata.department ||
-            "N/A";
+            profile?.department || userMetadata.department || "N/A";
 
           const resolvedSession =
             profile?.academic_session ||

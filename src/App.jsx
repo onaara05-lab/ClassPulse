@@ -19,6 +19,7 @@ import StudentSchedule from "./pages/StudentSchedule";
 import StudentWarnings from "./pages/StudentWarnings";
 import StudentProfile from "./pages/StudentProfile";
 import StudentCourseRegistration from "./pages/StudentCourseRegistration";
+import SupabaseDebug from "./pages/SupabaseDebug";
 
 import "./App.css";
 
@@ -47,6 +48,7 @@ function App() {
         <Route path="/student/warnings" element={<StudentWarnings />} />
         <Route path="/student/profile" element={<StudentProfile />} />
         <Route path="/student/coursesReg" element={<StudentCourseRegistration />} />
+        <Route path="/supabase-debug" element={<SupabaseDebug />} />
       </Routes>
     </Router>
   );

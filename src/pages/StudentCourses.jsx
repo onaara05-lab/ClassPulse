@@ -9,6 +9,7 @@ const normalizeValue = (value) =>
   String(value || "")
     .trim()
     .toLowerCase();
+
 const normalizeLevel = (value) => {
   const raw = String(value || "")
     .trim()
@@ -42,9 +43,11 @@ function StudentCourses() {
   const [enrollingCourseId, setEnrollingCourseId] = useState(null);
   const [error, setError] = useState("");
 
-  const fetchStudentCourses = useCallback(async () => {
+  const fetchStudentCourses = useCallback(async (isInitial = false) => {
     try {
-      setLoading(true);
+      if (isInitial) {
+        setLoading(true);
+      }
       setError("");
 
       // 1. Get authenticated student
@@ -55,21 +58,23 @@ function StudentCourses() {
 
       if (userError || !user) throw userError || new Error("User not found");
 
-      // Fetch student profile for department and level, but do not block the page if one is missing.
+      // Fetch student profile for department and level
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
         .select("department, level")
         .eq("id", user.id)
         .maybeSingle();
 
-      if (profileError) throw profileError;
+      if (profileError) {
+        console.warn("Profile fetch warning:", profileError.message);
+      }
 
       const department =
         profile?.department || user.user_metadata?.department || "";
       const level = profile?.level || user.user_metadata?.level || "";
       const resolvedStudent = { department, level };
 
-      // 2. Load all courses and include any course that matches the student's context or is already enrolled.
+      // 2. Load all courses and student enrollments in parallel
       const [coursesResult, enrollmentResult] = await Promise.all([
         supabase
           .from("courses")
@@ -88,50 +93,64 @@ function StudentCourses() {
         (enrollmentResult.data || []).map((enrollment) => enrollment.course_id),
       );
 
-      const filteredCourses = (coursesResult.data || []).filter(
+      const allCourses = coursesResult.data || [];
+
+      // Filter courses matching student context or already enrolled
+      const filteredCourses = allCourses.filter(
         (course) =>
           enrolledCourseIds.has(course.id) ||
           matchesStudentContext(course, resolvedStudent),
       );
 
-      const courseIds = filteredCourses.map((course) => course.id);
+      const displayCourses = filteredCourses.length > 0 ? filteredCourses : allCourses;
+      const courseIds = displayCourses.map((course) => course.id);
 
-      const { data: sessionsData, error: sessionsError } =
-        courseIds.length > 0
-          ? await supabase
-              .from("class_sessions")
-              .select("id, course_id")
-              .in("course_id", courseIds)
-          : { data: [], error: null };
+      // 3. Safely fetch class sessions
+      let sessionsData = [];
+      if (courseIds.length > 0) {
+        const { data: sessions, error: sessionsError } = await supabase
+          .from("class_sessions")
+          .select("id, course_id")
+          .in("course_id", courseIds);
 
-      if (sessionsError) throw sessionsError;
+        if (sessionsError) {
+          console.warn("Sessions fetch warning:", sessionsError.message);
+        } else {
+          sessionsData = sessions || [];
+        }
+      }
 
-      // 3. Fetch attendance records for this student.
-      const { data: attendanceData, error: attendanceError } = await supabase
+      // 4. Safely fetch attendance records for this student
+      let attendanceData = [];
+      const { data: attendance, error: attendanceError } = await supabase
         .from("attendance_records")
         .select("status, class_session_id")
         .eq("student_id", user.id);
 
-      if (attendanceError) throw attendanceError;
+      if (attendanceError) {
+        console.warn("Attendance records fetch warning:", attendanceError.message);
+      } else {
+        attendanceData = attendance || [];
+      }
 
-      // 4. Calculate attendance percentage and breakdown per course
-      const processedCourses = filteredCourses.map((course) => {
+      // 5. Calculate attendance percentage and breakdown per course
+      const processedCourses = displayCourses.map((course) => {
         const isEnrolled = enrolledCourseIds.has(course.id);
-        const courseSessionIds = (sessionsData || [])
+        const courseSessionIds = sessionsData
           .filter((session) => session.course_id === course.id)
           .map((session) => session.id);
+          
         const total = isEnrolled ? courseSessionIds.length : 0;
-        const attended = (attendanceData || []).filter(
+        const attended = attendanceData.filter(
           (record) =>
             isEnrolled &&
             courseSessionIds.includes(record.class_session_id) &&
             record.status?.toLowerCase() === "present",
         ).length;
-        const missed = total - attended;
+        const missed = Math.max(0, total - attended);
 
         const percent = total > 0 ? Math.round((attended / total) * 100) : 0;
 
-        // Dynamic styling based on attendance percentage thresholds
         let badgeBg = "bg-emerald-100";
         let badgeText = "text-emerald-700";
         let barColor = "bg-emerald-500";
@@ -188,7 +207,7 @@ function StudentCourses() {
       });
 
       if (enrollError) throw enrollError;
-      await fetchStudentCourses();
+      await fetchStudentCourses(false);
     } catch (err) {
       console.error("Error enrolling in course:", err);
       setError(err.message || "Could not enroll in this course.");
@@ -198,9 +217,11 @@ function StudentCourses() {
   };
 
   useEffect(() => {
-    (async () => {
-      await fetchStudentCourses();
-    })();
+    const timer = setTimeout(() => {
+      fetchStudentCourses(true);
+    }, 0);
+
+    return () => clearTimeout(timer);
   }, [fetchStudentCourses]);
 
   return (
@@ -243,7 +264,6 @@ function StudentCourses() {
 
         {/* Main Content */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8">
-          {/* Header */}
           <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <h1 className="text-xl font-bold text-text-primary sm:text-2xl">
               Courses
@@ -269,7 +289,7 @@ function StudentCourses() {
                 No courses found
               </p>
               <p className="mt-1 text-xs text-text-secondary">
-                No courses match your department and level yet.
+                No courses are currently available in the system.
               </p>
             </div>
           ) : (
@@ -277,48 +297,50 @@ function StudentCourses() {
               {courses.map((course) => (
                 <div
                   key={course.id}
-                  className="rounded-xl border border-border bg-surface p-4 shadow-sm transition hover:shadow-md"
+                  className="rounded-xl border border-border bg-surface p-4 shadow-sm transition hover:shadow-md flex flex-col justify-between"
                 >
-                  {/* Course Header */}
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <h2 className="text-lg font-bold text-text-primary">
-                        {course.code}
-                      </h2>
-                      <p className="mt-1 text-xs text-text-secondary">
-                        {course.title}
+                  <div>
+                    {/* Course Header */}
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <h2 className="text-lg font-bold text-text-primary">
+                          {course.code}
+                        </h2>
+                        <p className="mt-1 text-xs text-text-secondary">
+                          {course.title}
+                        </p>
+                      </div>
+
+                      <span
+                        className={`rounded-full px-3 py-1 text-xs font-bold ${course.badgeBg} ${course.badgeText}`}
+                      >
+                        {course.percent}%
+                      </span>
+                    </div>
+
+                    {/* Progress Bar */}
+                    <div className="mt-5">
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
+                        <div
+                          className={`h-full rounded-full ${course.barColor}`}
+                          style={{ width: `${course.percent}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Metrics Breakdown */}
+                    {course.isEnrolled ? (
+                      <div className="mt-3 flex items-center justify-between text-xs text-text-secondary">
+                        <span>{course.attended} attended</span>
+                        <span>{course.missed} missed</span>
+                        <span>{course.total} total</span>
+                      </div>
+                    ) : (
+                      <p className="mt-3 text-xs text-text-secondary">
+                        Enroll to see this course's schedule and attendance.
                       </p>
-                    </div>
-
-                    <span
-                      className={`rounded-full px-3 py-1 text-xs font-bold ${course.badgeBg} ${course.badgeText}`}
-                    >
-                      {course.percent}%
-                    </span>
+                    )}
                   </div>
-
-                  {/* Progress Bar */}
-                  <div className="mt-5">
-                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
-                      <div
-                        className={`h-full rounded-full ${course.barColor}`}
-                        style={{ width: `${course.percent}%` }}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Metrics Breakdown */}
-                  {course.isEnrolled ? (
-                    <div className="mt-3 flex items-center justify-between text-xs text-text-secondary">
-                      <span>{course.attended} attended</span>
-                      <span>{course.missed} missed</span>
-                      <span>{course.total} total</span>
-                    </div>
-                  ) : (
-                    <p className="mt-3 text-xs text-text-secondary">
-                      Enroll to see this course's schedule and attendance.
-                    </p>
-                  )}
 
                   <button
                     type="button"
@@ -328,7 +350,7 @@ function StudentCourses() {
                     onClick={() => handleEnroll(course.id)}
                     className={`mt-4 inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition ${
                       course.isEnrolled
-                        ? "bg-emerald-50 text-emerald-700"
+                        ? "bg-emerald-50 text-emerald-700 cursor-default"
                         : "bg-primary text-white hover:opacity-90 disabled:opacity-60"
                     }`}
                   >

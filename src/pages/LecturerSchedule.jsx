@@ -514,19 +514,24 @@ function LecturerSchedule() {
                 )}
               </div>
 
-              {/* Department Input */}
+              {/* Department Selector */}
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-text-primary">
                   Department
                 </label>
-                <input
-                  type="text"
+                <select
                   name="department"
                   value={formData.department}
                   onChange={handleChange}
-                  placeholder="e.g. Computer Science"
                   className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
-                />
+                >
+                  <option value="">Select department</option>
+                  <option value="Computer Science">Computer Science</option>
+                  <option value="Information Technology">Information Technology</option>
+                  <option value="Software Engineering">Software Engineering</option>
+                  <option value="Cyber Security">Cyber Security</option>
+                  {/* Add more department options as needed */}
+                </select>
               </div>
 
               {/* Level Selector */}

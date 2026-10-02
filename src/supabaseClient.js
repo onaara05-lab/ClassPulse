@@ -10,6 +10,13 @@ const rawKey =
 const supabaseUrl = String(rawUrl).trim();
 const supabaseAnonKey = String(rawKey).trim();
 
+// Basic diagnostics so you can see the runtime values in the browser console.
+console.debug("[supabaseClient] URL:", supabaseUrl);
+console.debug(
+  "[supabaseClient] Anon key present:",
+  Boolean(supabaseAnonKey),
+);
+
 if (!supabaseUrl || !supabaseAnonKey) {
   console.warn(
     "Missing Supabase config: VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY",
@@ -27,7 +34,13 @@ function makeClient() {
 }
 
 const globalKey = "__SUPABASE_CLIENT__";
-if (!globalThis[globalKey]) globalThis[globalKey] = makeClient();
-export const supabase =
-  globalThis[globalKey] ?? createClient(supabaseUrl, supabaseAnonKey);
+const existingClient = globalThis[globalKey];
+const client = existingClient ?? makeClient();
+// Only write the global if we successfully created a client.
+if (!existingClient && client) globalThis[globalKey] = client;
+
+// Export the client; if client creation failed above, fall back to creating
+// a fresh client here. This keeps behavior backward-compatible while making
+// the global assignment safer.
+export const supabase = client ?? createClient(supabaseUrl, supabaseAnonKey);
 export default supabase;

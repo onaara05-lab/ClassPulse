@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import LecturerSidebar from "../components/lecturer/LecturerSidebar";
 import LecturerHeader from "../components/lecturer/LecturerHeader";
 import StatisticsCards from "../components/lecturer/StatCard";
@@ -7,7 +7,9 @@ import AtRiskStudentsTable from "../components/lecturer/AtRiskStudentsTable";
 import { supabase } from "../supabaseClient";
 
 const normalizeAttendanceStatus = (value) =>
-  String(value ?? "").trim().toLowerCase();
+  String(value ?? "")
+    .trim()
+    .toLowerCase();
 
 function LecturerDashboard() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -21,339 +23,342 @@ function LecturerDashboard() {
     overallAttendanceRate: 0,
   });
 
-  useEffect(() => {
-    async function fetchDashboardStats() {
-      try {
-        setLoading(true);
-        setError(null);
+  // Memoize fetchDashboardStats using useCallback to keep reference stable
+  const fetchDashboardStats = useCallback(async () => {
+    try {
+      setError(null);
 
-        // 1. Get authenticated user
-        const {
-          data: { user },
-          error: userError,
-        } = await supabase.auth.getUser();
+      // 1. Get authenticated user
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
 
-        if (userError) throw userError;
-        if (!user) throw new Error("No active session found.");
+      if (userError) throw userError;
+      if (!user) throw new Error("No active session found.");
 
-        // 2. Fetch courses assigned to this lecturer.
-        const resolveCourseIds = async () => {
-          const { data: profileData, error: profileError } = await supabase
-            .from("profiles")
-            .select("full_name")
-            .eq("id", user.id)
-            .maybeSingle();
+      // 2. Fetch courses assigned to this lecturer.
+      const resolveCourseIds = async () => {
+        const { data: profileData, error: profileError } = await supabase
+          .from("profiles")
+          .select("full_name")
+          .eq("id", user.id)
+          .maybeSingle();
 
-          if (profileError) {
-            console.warn(
-              "Profile lookup failed during fallback course resolution:",
-              profileError.message,
-            );
-          }
+        if (profileError) {
+          console.warn(
+            "Profile lookup failed during fallback course resolution:",
+            profileError.message,
+          );
+        }
 
-          const candidateNames = [
-            profileData?.full_name,
-            user.user_metadata?.full_name,
-            user.user_metadata?.name,
-            user.email?.split("@")[0],
-          ]
-            .map((value) => value?.trim())
-            .filter(Boolean);
+        const candidateNames = [
+          profileData?.full_name,
+          user.user_metadata?.full_name,
+          user.user_metadata?.name,
+          user.email?.split("@")[0],
+        ]
+          .map((value) => value?.trim())
+          .filter(Boolean);
 
-          const { data: lecturerCourses = [], error: directCoursesError } =
+        const { data: lecturerCourses = [], error: directCoursesError } =
+          await supabase
+            .from("courses")
+            .select("id")
+            .eq("lecturer_id", user.id);
+
+        if (directCoursesError) throw directCoursesError;
+
+        let courseIds = [
+          ...new Set((lecturerCourses || []).map((course) => course.id)),
+        ];
+
+        for (const candidateName of [...new Set(candidateNames)]) {
+          if (courseIds.length > 0) break;
+
+          const { data: namedCourses = [], error: namedCoursesError } =
             await supabase
               .from("courses")
               .select("id")
-              .eq("lecturer_id", user.id);
+              .eq("lecturer_name", candidateName);
 
-          if (directCoursesError) throw directCoursesError;
+          if (namedCoursesError) {
+            console.warn(
+              "Fallback lecturer-name course lookup failed:",
+              namedCoursesError.message,
+            );
+            continue;
+          }
 
-          let courseIds = [
-            ...new Set((lecturerCourses || []).map((course) => course.id)),
+          courseIds = [
+            ...new Set([
+              ...courseIds,
+              ...namedCourses.map((course) => course.id),
+            ]),
           ];
-
-          for (const candidateName of [...new Set(candidateNames)]) {
-            if (courseIds.length > 0) break;
-
-            const { data: namedCourses = [], error: namedCoursesError } =
-              await supabase
-                .from("courses")
-                .select("id")
-                .eq("lecturer_name", candidateName);
-
-            if (namedCoursesError) {
-              console.warn(
-                "Fallback lecturer-name course lookup failed:",
-                namedCoursesError.message,
-              );
-              continue;
-            }
-
-            courseIds = [
-              ...new Set([
-                ...courseIds,
-                ...namedCourses.map((course) => course.id),
-              ]),
-            ];
-          }
-
-          if (courseIds.length === 0) {
-            const { data: openSessions = [], error: openSessionError } =
-              await supabase
-                .from("class_sessions")
-                .select("course_id, courses ( lecturer_id, lecturer_name )")
-                .eq("attendance_open", true);
-
-            if (openSessionError) {
-              console.warn(
-                "Open-session fallback lookup failed:",
-                openSessionError.message,
-              );
-            }
-
-            const candidateSet = new Set(
-              candidateNames.map((name) => name.toLowerCase()),
-            );
-            courseIds = [
-              ...new Set(
-                (openSessions || [])
-                  .filter((session) => {
-                    const course = session.courses;
-                    if (!course) return false;
-                    return (
-                      course.lecturer_id === user.id ||
-                      (course.lecturer_name &&
-                        candidateSet.has(course.lecturer_name.toLowerCase()))
-                    );
-                  })
-                  .map((session) => session.course_id)
-                  .filter(Boolean),
-              ),
-            ];
-          }
-
-          return [...new Set(courseIds)];
-        };
-
-        const courseIds = await resolveCourseIds();
-        const { data: courses = [], error: coursesError } = await supabase
-          .from("courses")
-          .select("id, course_code")
-          .in("id", courseIds);
-
-        if (coursesError) throw coursesError;
-
-        const totalCourses = courses.length;
-
-        if (totalCourses === 0) {
-          setStats({
-            totalCourses: 0,
-            totalStudents: 0,
-            activeSessions: 0,
-            overallAttendanceRate: 0,
-          });
-          setLoading(false);
-          return;
         }
 
-        // 3. Fetch enrollments
-        const { data: enrollments, error: enrollmentsError } = await supabase
-          .from("enrollments")
-          .select("course_id, student_id")
-          .in("course_id", courseIds);
-
-        if (enrollmentsError) throw enrollmentsError;
-
-        // 4. Fetch total & open class sessions for these courses
-        const { data: sessions, error: sessionsError } = await supabase
-          .from("class_sessions")
-          .select("id, course_id, attendance_open, session_type")
-          .in("course_id", courseIds);
-
-        if (sessionsError) throw sessionsError;
-
-        const totalSessions = sessions?.length || 0;
-        const activeSessions =
-          sessions?.filter((s) => s.attendance_open).length || 0;
-
-        const sessionIds = (sessions || []).map((s) => s.id);
-
-        // Fetch attendance records to support fallback calculations if enrollments are empty
-        const { data: attendanceRecords, error: attendanceError } =
-          sessionIds.length > 0
-            ? await supabase
-                .from("attendance_records")
-                .select("id, student_id, class_session_id, status")
-                .in("class_session_id", sessionIds)
-            : { data: [], error: null };
-
-        if (attendanceError) throw attendanceError;
-
-        // Calculate unique students: use enrollments if available, otherwise fall back to unique attendees
-        const enrolledStudentIds = new Set(
-          (enrollments || []).map((e) => e.student_id).filter(Boolean)
-        );
-        const attendedStudentIds = new Set(
-          (attendanceRecords || []).map((r) => r.student_id).filter(Boolean)
-        );
-
-        const totalStudents =
-          enrolledStudentIds.size > 0
-            ? enrolledStudentIds.size
-            : attendedStudentIds.size;
-
-        // 5. Calculate overall attendance percentage safely
-        let overallAttendanceRate = 0;
-        if (totalSessions > 0) {
-          const studentsByCourse = new Map();
-          if (enrolledStudentIds.size > 0) {
-            (enrollments || []).forEach(({ course_id }) => {
-              studentsByCourse.set(
-                course_id,
-                (studentsByCourse.get(course_id) || 0) + 1,
-              );
-            });
-          } else {
-            sessions.forEach((session) => {
-              const courseAttendees = new Set(
-                (attendanceRecords || [])
-                  .filter((r) => r.class_session_id === session.id)
-                  .map((r) => r.student_id)
-              );
-              studentsByCourse.set(
-                session.course_id,
-                Math.max(1, courseAttendees.size)
-              );
-            });
-          }
-
-          const totalPossibleAttendance = sessions.reduce(
-            (total, session) =>
-              total + (studentsByCourse.get(session.course_id) || 0),
-            0,
-          );
-
-          const attendanceSet = new Set(
-            (attendanceRecords || [])
-              .filter((record) => {
-                const status = normalizeAttendanceStatus(record.status);
-                return status === "present" || status === "late";
-              })
-              .map((record) => `${record.class_session_id}:${record.student_id}`),
-          );
-
-          const totalPresent = attendanceSet.size;
-
-          if (totalPossibleAttendance > 0) {
-            overallAttendanceRate = Math.min(
-              100,
-              Math.round((totalPresent / totalPossibleAttendance) * 100),
-            );
-          } else if (totalPresent > 0) {
-            overallAttendanceRate = 100;
-          }
-        }
-
-        // 6. Load recent attendance activity for student feedback on the dashboard
-        let recentEntries = [];
-
-        if (sessionIds.length > 0) {
-          const { data: attendanceActivity, error: activityError } =
+        if (courseIds.length === 0) {
+          const { data: openSessions = [], error: openSessionError } =
             await supabase
-              .from("attendance_records")
-              .select("id, student_id, class_session_id, status, marked_at")
-              .in("class_session_id", sessionIds)
-              .order("marked_at", { ascending: false })
-              .limit(8);
+              .from("class_sessions")
+              .select("course_id, courses ( lecturer_id, lecturer_name )")
+              .eq("attendance_open", true);
 
-          if (activityError) throw activityError;
+          if (openSessionError) {
+            console.warn(
+              "Open-session fallback lookup failed:",
+              openSessionError.message,
+            );
+          }
 
-          const uniqueStudentIds = [
+          const candidateSet = new Set(
+            candidateNames.map((name) => name.toLowerCase()),
+          );
+          courseIds = [
             ...new Set(
-              (attendanceActivity || [])
-                .map((record) => record.student_id)
+              (openSessions || [])
+                .filter((session) => {
+                  const course = session.courses;
+                  if (!course) return false;
+                  return (
+                    course.lecturer_id === user.id ||
+                    (course.lecturer_name &&
+                      candidateSet.has(course.lecturer_name.toLowerCase()))
+                  );
+                })
+                .map((session) => session.course_id)
                 .filter(Boolean),
             ),
           ];
-
-          let profiles = [];
-          if (uniqueStudentIds.length > 0) {
-            const { data: profileData, error: profileError } = await supabase
-              .from("profiles")
-              .select("id, full_name")
-              .in("id", uniqueStudentIds);
-
-            if (profileError) throw profileError;
-            profiles = profileData || [];
-          }
-
-          const profileMap = new Map(
-            profiles.map((profile) => [
-              profile.id,
-              profile.full_name || "Student",
-            ]),
-          );
-
-          const courseMap = new Map(
-            (courses || []).map((course) => [
-              course.id,
-              course.course_code || "Course",
-            ]),
-          );
-
-          const sessionMap = new Map(
-            (sessions || []).map((session) => [
-              session.id,
-              {
-                course: courseMap.get(session.course_id) || "Course",
-                type: session.session_type || "Lecture",
-              },
-            ]),
-          );
-
-          recentEntries = (attendanceActivity || [])
-            .filter((record) =>
-              ["present", "late"].includes((record.status || "").toLowerCase()),
-            )
-            .slice(0, 6)
-            .map((record) => {
-              const sessionInfo = sessionMap.get(record.class_session_id);
-              const studentName =
-                profileMap.get(record.student_id) || "Student";
-
-              return {
-                id: record.id,
-                student: studentName,
-                course: sessionInfo?.course || "Course",
-                type: sessionInfo?.type || "Lecture",
-                markedAt: record.marked_at
-                  ? new Date(record.marked_at).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })
-                  : "Just now",
-              };
-            });
         }
 
+        return [...new Set(courseIds)];
+      };
+
+      const courseIds = await resolveCourseIds();
+      const { data: courses = [], error: coursesError } = await supabase
+        .from("courses")
+        .select("id, course_code")
+        .in("id", courseIds);
+
+      if (coursesError) throw coursesError;
+
+      const totalCourses = courses.length;
+
+      if (totalCourses === 0) {
         setStats({
-          totalCourses,
-          totalStudents,
-          activeSessions,
-          overallAttendanceRate,
+          totalCourses: 0,
+          totalStudents: 0,
+          activeSessions: 0,
+          overallAttendanceRate: 0,
         });
-        setRecentAttendance(recentEntries);
-      } catch (err) {
-        console.error("Error fetching dashboard stats:", err);
-        setError(err.message || "Failed to load dashboard statistics.");
-      } finally {
         setLoading(false);
+        return;
       }
+
+      // 3. Fetch enrollments
+      const { data: enrollments, error: enrollmentsError } = await supabase
+        .from("enrollments")
+        .select("course_id, student_id")
+        .in("course_id", courseIds);
+
+      if (enrollmentsError) throw enrollmentsError;
+
+      // 4. Fetch total & open class sessions for these courses
+      const { data: sessions, error: sessionsError } = await supabase
+        .from("class_sessions")
+        .select("id, course_id, attendance_open, session_type")
+        .in("course_id", courseIds);
+
+      if (sessionsError) throw sessionsError;
+
+      const totalSessions = sessions?.length || 0;
+      const activeSessions =
+        sessions?.filter((s) => s.attendance_open).length || 0;
+
+      const sessionIds = (sessions || []).map((s) => s.id);
+
+      // Fetch attendance records to support fallback calculations if enrollments are empty
+      const { data: attendanceRecords, error: attendanceError } =
+        sessionIds.length > 0
+          ? await supabase
+              .from("attendance_records")
+              .select("id, student_id, class_session_id, status")
+              .in("class_session_id", sessionIds)
+          : { data: [], error: null };
+
+      if (attendanceError) throw attendanceError;
+
+      // Calculate unique students
+      const enrolledStudentIds = new Set(
+        (enrollments || []).map((e) => e.student_id).filter(Boolean),
+      );
+      const attendedStudentIds = new Set(
+        (attendanceRecords || []).map((r) => r.student_id).filter(Boolean),
+      );
+
+      const totalStudents =
+        enrolledStudentIds.size > 0
+          ? enrolledStudentIds.size
+          : attendedStudentIds.size;
+
+      // 5. Calculate overall attendance percentage safely
+      let overallAttendanceRate = 0;
+      if (totalSessions > 0) {
+        const studentsByCourse = new Map();
+        if (enrolledStudentIds.size > 0) {
+          (enrollments || []).forEach(({ course_id }) => {
+            studentsByCourse.set(
+              course_id,
+              (studentsByCourse.get(course_id) || 0) + 1,
+            );
+          });
+        } else {
+          sessions.forEach((session) => {
+            const courseAttendees = new Set(
+              (attendanceRecords || [])
+                .filter((r) => r.class_session_id === session.id)
+                .map((r) => r.student_id),
+            );
+            studentsByCourse.set(
+              session.course_id,
+              Math.max(1, courseAttendees.size),
+            );
+          });
+        }
+
+        const totalPossibleAttendance = sessions.reduce(
+          (total, session) =>
+            total + (studentsByCourse.get(session.course_id) || 0),
+          0,
+        );
+
+        const attendanceSet = new Set(
+          (attendanceRecords || [])
+            .filter((record) => {
+              const status = normalizeAttendanceStatus(record.status);
+              return status === "present" || status === "late";
+            })
+            .map((record) => `${record.class_session_id}:${record.student_id}`),
+        );
+
+        const totalPresent = attendanceSet.size;
+
+        if (totalPossibleAttendance > 0) {
+          overallAttendanceRate = Math.min(
+            100,
+            Math.round((totalPresent / totalPossibleAttendance) * 100),
+          );
+        } else if (totalPresent > 0) {
+          overallAttendanceRate = 100;
+        }
+      }
+
+      // 6. Load recent attendance activity
+      let recentEntries = [];
+
+      if (sessionIds.length > 0) {
+        const { data: attendanceActivity, error: activityError } =
+          await supabase
+            .from("attendance_records")
+            .select("id, student_id, class_session_id, status, marked_at")
+            .in("class_session_id", sessionIds)
+            .order("marked_at", { ascending: false })
+            .limit(8);
+
+        if (activityError) throw activityError;
+
+        const uniqueStudentIds = [
+          ...new Set(
+            (attendanceActivity || [])
+              .map((record) => record.student_id)
+              .filter(Boolean),
+          ),
+        ];
+
+        let profiles = [];
+        if (uniqueStudentIds.length > 0) {
+          const { data: profileData, error: profileError } = await supabase
+            .from("profiles")
+            .select("id, full_name")
+            .in("id", uniqueStudentIds);
+
+          if (profileError) throw profileError;
+          profiles = profileData || [];
+        }
+
+        const profileMap = new Map(
+          profiles.map((profile) => [
+            profile.id,
+            profile.full_name || "Student",
+          ]),
+        );
+
+        const courseMap = new Map(
+          (courses || []).map((course) => [
+            course.id,
+            course.course_code || "Course",
+          ]),
+        );
+
+        const sessionMap = new Map(
+          (sessions || []).map((session) => [
+            session.id,
+            {
+              course: courseMap.get(session.course_id) || "Course",
+              type: session.session_type || "Lecture",
+            },
+          ]),
+        );
+
+        recentEntries = (attendanceActivity || [])
+          .filter((record) =>
+            ["present", "late"].includes((record.status || "").toLowerCase()),
+          )
+          .slice(0, 6)
+          .map((record) => {
+            const sessionInfo = sessionMap.get(record.class_session_id);
+            const studentName = profileMap.get(record.student_id) || "Student";
+
+            return {
+              id: record.id,
+              student: studentName,
+              course: sessionInfo?.course || "Course",
+              type: sessionInfo?.type || "Lecture",
+              markedAt: record.marked_at
+                ? new Date(record.marked_at).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })
+                : "Just now",
+            };
+          });
+      }
+
+      setStats({
+        totalCourses,
+        totalStudents,
+        activeSessions,
+        overallAttendanceRate,
+      });
+      setRecentAttendance(recentEntries);
+    } catch (err) {
+      console.error("Error fetching dashboard stats:", err);
+      setError(err.message || "Failed to load dashboard statistics.");
+    } finally {
+      setLoading(false);
     }
+  }, []);
 
-    fetchDashboardStats();
-    const refreshId = window.setInterval(fetchDashboardStats, 8000);
+  useEffect(() => {
+    // Initial fetch on component mount wrapped correctly
+    const loadDashboard = async () => {
+      await fetchDashboardStats();
+    };
+    loadDashboard();
 
+    // Setup Supabase Realtime channel for instant live updates without spamming server polls
     const channel = supabase
       .channel("public:attendance_records:dashboard")
       .on(
@@ -361,15 +366,14 @@ function LecturerDashboard() {
         { event: "*", schema: "public", table: "attendance_records" },
         () => {
           fetchDashboardStats();
-        },
+        }
       )
       .subscribe();
 
     return () => {
-      window.clearInterval(refreshId);
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [fetchDashboardStats]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -382,12 +386,10 @@ function LecturerDashboard() {
         <LecturerHeader onMenuClick={() => setSidebarOpen(true)} />
 
         <main className="space-y-8 p-4 sm:p-6 lg:p-8">
-          {/* Page Introduction */}
           <div>
             <h2 className="text-lg font-semibold text-text-primary">
               Dashboard Overview
             </h2>
-
             <p className="mt-2 text-sm text-text-secondary">
               Monitor your courses, students, and attendance performance.
             </p>
@@ -400,7 +402,6 @@ function LecturerDashboard() {
             </div>
           )}
 
-          {/* Statistics Cards */}
           <StatisticsCards stats={stats} loading={loading} />
 
           <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
@@ -470,10 +471,7 @@ function LecturerDashboard() {
             </div>
           </div>
 
-          {/* Charts */}
           <AttendanceCharts />
-
-          {/* Students At Risk */}
           <AtRiskStudentsTable />
         </main>
       </div>

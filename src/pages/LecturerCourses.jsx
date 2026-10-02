@@ -1,8 +1,52 @@
 import { useState, useEffect } from "react";
-import { Plus, X, Menu, Loader2 } from "lucide-react";
+import { Plus, X, Menu, Loader2, Check } from "lucide-react";
 import logo from "../assets/classpulse-logo.png";
 import LecturerSidebar from "../components/lecturer/LecturerSidebar";
 import { supabase } from "../supabaseClient";
+
+// AAUA Departments grouped by Faculty for selection
+const AAUA_FACULTIES = [
+  {
+    faculty: "Faculty of Science",
+    departments: ["Computer Science", "Microbiology", "Physics", "Chemistry", "Mathematics", "Plant Science and Biotechnology", "Animal and Environmental Biology"],
+  },
+  {
+    faculty: "Faculty of Computing",
+    departments: ["Cyber Security", "Software Engineering", "Information Technology", "Computer Science (Computing)"],
+  },
+  {
+    faculty: "Faculty of Administration and Management Sciences",
+    departments: ["Accounting", "Business Administration", "Banking and Finance", "Public Administration", "Marketing"],
+  },
+  {
+    faculty: "Faculty of Social Sciences",
+    departments: ["Economics", "Mass Communication", "Political Science", "Sociology", "Geography and Planning Science"],
+  },
+  {
+    faculty: "Faculty of Education",
+    departments: ["Science Education", "Arts Education", "Educational Management", "Guidance and Counselling", "Human Kinetics and Health Education"],
+  },
+  {
+    faculty: "Faculty of Arts",
+    departments: ["English and Literary Studies", "History and International Studies", "Philosophy", "Religious Studies", "Linguistics and African Languages"],
+  },
+  {
+    faculty: "Faculty of Law",
+    departments: ["Public Law", "Private and Property Law", "International Law and Jurisprudence"],
+  },
+  {
+    faculty: "Faculty of Agriculture",
+    departments: ["Agricultural Economics and Extension", "Animal Science", "Crop Science", "Soil Science"],
+  },
+  {
+    faculty: "Faculty of Allied Health Sciences",
+    departments: ["Nursing Science", "Medical Laboratory Science"],
+  },
+  {
+    faculty: "Faculty of Environmental Designs",
+    departments: ["Architecture", "Estate Management", "Surveying and Geoinformatics"],
+  },
+];
 
 const normalizeAttendanceStatus = (value) =>
   String(value ?? "").trim().toLowerCase();
@@ -93,7 +137,6 @@ function LecturerCourses() {
       try {
         setError(null);
 
-        // 1. Get current logged-in lecturer
         const {
           data: { user },
           error: userError,
@@ -112,7 +155,6 @@ function LecturerCourses() {
           return;
         }
 
-        // 2. Fetch courses created by this lecturer (including total_students)
         const { data: rawCourses, error: coursesError } = await supabase
           .from("courses")
           .select("id, course_code, course_name, department, level, total_students")
@@ -130,7 +172,6 @@ function LecturerCourses() {
 
         const resolvedCourseIds = rawCourses.map((c) => c.id);
 
-        // 3. Fetch count of enrolled students per course
         const { data: enrollments, error: enrollmentsError } = await supabase
           .from("enrollments")
           .select("course_id, student_id")
@@ -143,7 +184,6 @@ function LecturerCourses() {
           enrollmentCounts[e.course_id] = (enrollmentCounts[e.course_id] || 0) + 1;
         });
 
-        // 4. Fetch class sessions held per course
         const { data: sessions, error: sessionsError } = await supabase
           .from("class_sessions")
           .select("id, course_id")
@@ -160,7 +200,6 @@ function LecturerCourses() {
 
         const sessionIds = sessions?.map((s) => s.id) || [];
 
-        // 5. Fetch present attendance records across these sessions
         let attendanceMap = {};
         if (sessionIds.length > 0) {
           const { data: records, error: recordsError } = await supabase
@@ -184,7 +223,6 @@ function LecturerCourses() {
           });
         }
 
-        // 6. Aggregate metrics per course
         const computedCourses = rawCourses.map((c) => {
           const studentCount = c.total_students ?? enrollmentCounts[c.id] ?? 0;
           const sessionCount = sessionCounts[c.id] || 0;
@@ -223,36 +261,27 @@ function LecturerCourses() {
       }
     }
 
-    // Initial load
     fetchCoursesData();
 
-    // Setup Supabase Realtime listener
     const channel = supabase
       .channel("lecturer-courses-realtime")
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "enrollments" },
-        () => {
-          fetchCoursesData();
-        }
+        () => fetchCoursesData()
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "courses" },
-        () => {
-          fetchCoursesData();
-        }
+        () => fetchCoursesData()
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "class_sessions" },
-        () => {
-          fetchCoursesData();
-        }
+        () => fetchCoursesData()
       )
       .subscribe();
 
-    // Fallback polling interval
     const refreshId = window.setInterval(fetchCoursesData, 15000);
 
     return () => {
@@ -273,6 +302,11 @@ function LecturerCourses() {
   const handleSubmit = async (event) => {
     event.preventDefault();
 
+    if (!formData.department) {
+      setError("Please select a department.");
+      return;
+    }
+
     try {
       setSubmitting(true);
       setError(null);
@@ -285,14 +319,38 @@ function LecturerCourses() {
       if (userError) throw userError;
       if (!user) throw new Error("User authentication context missing.");
 
+      // 1. Ensure a profile row exists for this user to satisfy the foreign key constraint (courses_lecturer_id_fkey)
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
-        .select("full_name")
+        .select("id, full_name")
         .eq("id", user.id)
         .maybeSingle();
 
       if (profileError && profileError.code !== "PGRST116") {
         throw profileError;
+      }
+
+      // If profile row doesn't exist yet, lazily create it to prevent FK constraint failures
+      if (!profile) {
+        const fallbackName =
+          user.user_metadata?.full_name ||
+          user.user_metadata?.name ||
+          user.email?.split("@")[0] ||
+          "Lecturer";
+
+        const { error: insertProfileError } = await supabase
+          .from("profiles")
+          .upsert([
+            {
+              id: user.id,
+              full_name: fallbackName,
+              role: "lecturer",
+            },
+          ]);
+
+        if (insertProfileError) {
+          console.warn("Could not auto-create missing profile record:", insertProfileError.message);
+        }
       }
 
       const lecturerName =
@@ -302,14 +360,14 @@ function LecturerCourses() {
         user.email?.split("@")[0] ||
         "Lecturer";
 
-      // Insert new course into Supabase including total_students
+      // 2. Perform course insertion with guaranteed valid lecturer_id reference
       const { data, error: insertError } = await supabase
         .from("courses")
         .insert([
           {
             course_code: formData.code.trim(),
             course_name: formData.title.trim(),
-            department: formData.department.trim(),
+            department: formData.department,
             level: formData.level,
             total_students: formData.totalStudents ? parseInt(formData.totalStudents, 10) : 0,
             lecturer_id: user.id,
@@ -345,7 +403,11 @@ function LecturerCourses() {
       setIsModalOpen(false);
     } catch (err) {
       console.error("Error creating course:", err);
-      setError(err.message || "Failed to create new course.");
+      if (err.code === "23503" || err.message?.includes("foreign key constraint")) {
+        setError("Foreign key error: Your account ID does not have a matching profile record in the database. Please contact support or run a profile seed script.");
+      } else {
+        setError(err.message || "Failed to create new course.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -353,15 +415,12 @@ function LecturerCourses() {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Sidebar Component */}
       <LecturerSidebar
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
       />
 
-      {/* Main Content Area */}
       <div className="flex flex-col min-w-0 lg:ml-64 min-h-screen">
-        {/* Mobile Header Bar */}
         <div className="flex h-16 items-center justify-between border-b border-border bg-surface px-4 lg:hidden">
           <div className="flex items-center gap-3">
             <button
@@ -373,7 +432,6 @@ function LecturerCourses() {
               <Menu size={22} />
             </button>
 
-            {/* Mobile Logo Group */}
             <div className="flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600">
                 <img
@@ -389,15 +447,12 @@ function LecturerCourses() {
           </div>
         </div>
 
-        {/* Page Content */}
         <main className="p-4 sm:p-6 lg:p-8 flex-1">
-          {/* Page Header */}
           <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h1 className="text-xl font-bold text-text-primary sm:text-2xl">
                 Course Management
               </h1>
-
               <p className="mt-1 text-sm text-text-secondary">
                 Manage your courses and monitor attendance.
               </p>
@@ -419,7 +474,6 @@ function LecturerCourses() {
             </div>
           )}
 
-          {/* Loading State */}
           {loading ? (
             <div className="flex items-center justify-center py-20 text-text-secondary">
               <Loader2 className="mr-2 h-6 w-6 animate-spin text-primary" />
@@ -435,7 +489,6 @@ function LecturerCourses() {
               </p>
             </div>
           ) : (
-            /* Course Cards Grid */
             <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
               {courses.map((course) => {
                 const attendanceIsLow = course.attendance < 80;
@@ -445,13 +498,11 @@ function LecturerCourses() {
                     key={course.id}
                     className="rounded-xl border border-border bg-surface p-4 shadow-sm transition hover:shadow-md"
                   >
-                    {/* Course Code and Attendance Badge */}
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <h2 className="text-sm font-bold text-text-primary sm:text-base">
                           {course.code}
                         </h2>
-
                         <p className="mt-1 text-xs leading-5 text-text-secondary sm:text-sm">
                           {course.title}
                         </p>
@@ -471,7 +522,6 @@ function LecturerCourses() {
                       </span>
                     </div>
 
-                    {/* Attendance Progress Bar */}
                     <div className="mt-5">
                       <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
                         <div
@@ -485,7 +535,6 @@ function LecturerCourses() {
                       </div>
                     </div>
 
-                    {/* Course Details */}
                     <div className="mt-3 flex items-center justify-between text-xs text-text-secondary">
                       <span>{course.students} students</span>
                       <span>{course.sessions} sessions</span>
@@ -500,17 +549,15 @@ function LecturerCourses() {
 
       {/* Add Course Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-md rounded-2xl bg-surface p-6 shadow-xl">
-            {/* Modal Header */}
-            <div className="mb-6 flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
+          <div className="w-full max-w-lg rounded-2xl bg-surface p-6 shadow-xl max-h-[90vh] flex flex-col">
+            <div className="mb-4 flex items-center justify-between shrink-0">
               <div>
                 <h2 className="text-lg font-bold text-text-primary">
                   Add New Course
                 </h2>
-
                 <p className="mt-1 text-sm text-text-secondary">
-                  Enter the details of your new course.
+                  Enter course details and select a department.
                 </p>
               </div>
 
@@ -525,9 +572,7 @@ function LecturerCourses() {
               </button>
             </div>
 
-            {/* Course Form */}
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Course Code */}
+            <form onSubmit={handleSubmit} className="space-y-4 overflow-y-auto pr-1 flex-1">
               <div>
                 <label
                   htmlFor="code"
@@ -535,7 +580,6 @@ function LecturerCourses() {
                 >
                   Course Code
                 </label>
-
                 <input
                   id="code"
                   name="code"
@@ -549,7 +593,6 @@ function LecturerCourses() {
                 />
               </div>
 
-              {/* Course Title */}
               <div>
                 <label
                   htmlFor="title"
@@ -557,7 +600,6 @@ function LecturerCourses() {
                 >
                   Course Title
                 </label>
-
                 <input
                   id="title"
                   name="title"
@@ -571,24 +613,48 @@ function LecturerCourses() {
                 />
               </div>
 
+              {/* Department Single Select Picker */}
               <div>
-                <label
-                  htmlFor="department"
-                  className="mb-1.5 block text-sm font-medium text-text-primary"
-                >
+                <label className="mb-1.5 block text-sm font-medium text-text-primary">
                   Department
                 </label>
-                <input
-                  id="department"
-                  name="department"
-                  type="text"
-                  placeholder="e.g. Computer Science"
-                  value={formData.department}
-                  onChange={handleChange}
-                  required
-                  disabled={submitting}
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
-                />
+
+                <div className="max-h-48 overflow-y-auto rounded-lg border border-border bg-background p-3 space-y-3">
+                  {AAUA_FACULTIES.map((group) => (
+                    <div key={group.faculty} className="space-y-1.5">
+                      <p className="text-xs font-bold text-text-secondary uppercase tracking-wider">
+                        {group.faculty}
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pl-1">
+                        {group.departments.map((dept) => {
+                          const isSelected = formData.department === dept;
+
+                          return (
+                            <button
+                              key={dept}
+                              type="button"
+                              onClick={() =>
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  department: dept,
+                                }))
+                              }
+                              disabled={submitting}
+                              className={`flex items-center justify-between rounded-md px-2.5 py-1.5 text-xs font-medium text-left transition ${
+                                isSelected
+                                  ? "bg-primary text-white"
+                                  : "bg-surface hover:bg-border/50 text-text-primary border border-border"
+                              }`}
+                            >
+                              <span className="truncate pr-2">{dept}</span>
+                              {isSelected && <Check size={14} className="shrink-0" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
 
               <div>
@@ -622,7 +688,6 @@ function LecturerCourses() {
                 </select>
               </div>
 
-              {/* Number of Students */}
               <div>
                 <label
                   htmlFor="totalStudents"
@@ -643,7 +708,6 @@ function LecturerCourses() {
                 />
               </div>
 
-              {/* Form Actions */}
               <div className="flex flex-col-reverse gap-3 pt-3 sm:flex-row sm:justify-end">
                 <button
                   type="button"
@@ -656,7 +720,7 @@ function LecturerCourses() {
 
                 <button
                   type="submit"
-                  disabled={submitting}
+                  disabled={submitting || !formData.department}
                   className="flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
                 >
                   {submitting ? (

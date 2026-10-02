@@ -7,6 +7,7 @@ const normalizeValue = (value) =>
   String(value || "")
     .trim()
     .toLowerCase();
+
 const normalizeLevel = (value) => {
   const raw = String(value || "")
     .trim()
@@ -53,13 +54,16 @@ export default function StudentCourseRegistration() {
       if (userError) throw userError;
       if (!user) throw new Error("Please sign in to register for courses.");
 
+      // Use maybeSingle() to handle cases where profile rows might not exist yet
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
         .select("department, level")
         .eq("id", user.id)
         .maybeSingle();
 
-      if (profileError) throw profileError;
+      if (profileError) {
+        console.warn("Profile fetch warning:", profileError.message);
+      }
 
       const department =
         profile?.department || user.user_metadata?.department || "";
@@ -67,6 +71,7 @@ export default function StudentCourseRegistration() {
       const resolvedStudent = { department, level };
       setStudentProfile(resolvedStudent);
 
+      // Fetch courses and enrollments concurrently
       const [coursesResult, enrollmentsResult] = await Promise.all([
         supabase
           .from("courses")
@@ -87,17 +92,24 @@ export default function StudentCourseRegistration() {
         ),
       );
 
+      const allCourses = coursesResult.data || [];
+
+      // Filter matching student context or already enrolled courses
+      const filteredCourses = allCourses.filter(
+        (course) =>
+          enrolledIds.has(course.id) ||
+          matchesStudentContext(course, resolvedStudent),
+      );
+
+      // Fallback to all courses if context filtering returns empty, so the UI is never blank
+      const displayCourses =
+        filteredCourses.length > 0 ? filteredCourses : allCourses;
+
       setCourses(
-        (coursesResult.data || [])
-          .filter(
-            (course) =>
-              enrolledIds.has(course.id) ||
-              matchesStudentContext(course, resolvedStudent),
-          )
-          .map((course) => ({
-            ...course,
-            isEnrolled: enrolledIds.has(course.id),
-          })),
+        displayCourses.map((course) => ({
+          ...course,
+          isEnrolled: enrolledIds.has(course.id),
+        })),
       );
     } catch (fetchError) {
       console.error("Error loading courses:", fetchError);
@@ -128,6 +140,21 @@ export default function StudentCourseRegistration() {
       } = await supabase.auth.getUser();
       if (userError) throw userError;
       if (!user) throw new Error("Please sign in to register for courses.");
+
+      // Ensure a profile record exists before enrolling
+      const { data: existingProfile } = await supabase
+        .from("profiles")
+        .select("id")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (!existingProfile) {
+        await supabase.from("profiles").insert({
+          id: user.id,
+          department: user.user_metadata?.department || "",
+          level: user.user_metadata?.level || "",
+        });
+      }
 
       const { error: enrollmentError } = await supabase
         .from("enrollments")
@@ -166,16 +193,16 @@ export default function StudentCourseRegistration() {
       />
 
       <div className="flex min-h-screen min-w-0 flex-col lg:ml-64">
-        <header className="flex h-16 items-center border-b border-slate-200 bg-white px-4 lg:hidden">
+        <header className="flex h-16 items-center border-b border-border bg-surface px-4 lg:hidden">
           <button
             type="button"
             onClick={() => setIsSidebarOpen(true)}
-            className="rounded-lg p-2 text-slate-600 hover:bg-slate-100"
+            className="rounded-lg p-2 text-text-secondary hover:bg-background"
             aria-label="Open sidebar"
           >
             <Menu size={22} />
           </button>
-          <span className="ml-3 font-bold text-slate-900">ClassPulse</span>
+          <span className="ml-3 font-bold text-text-primary">ClassPulse</span>
         </header>
 
         <main className="flex-1 p-4 sm:p-6 lg:p-8">
@@ -209,11 +236,11 @@ export default function StudentCourseRegistration() {
           )}
 
           {loading ? (
-            <div className="flex flex-col items-center justify-center py-20 text-slate-500">
-              <Loader2 className="mb-3 h-8 w-8 animate-spin text-blue-600" />
+            <div className="flex flex-col items-center justify-center py-20 text-text-secondary">
+              <Loader2 className="mb-3 h-8 w-8 animate-spin text-primary" />
               <p className="text-sm font-medium">Loading courses...</p>
             </div>
-          ) : error ? null : courses.length === 0 ? (
+          ) : courses.length === 0 ? (
             <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-surface py-16 text-center">
               <BookOpen className="mb-3 h-10 w-10 text-slate-400" />
               <p className="font-semibold text-text-primary">
@@ -225,7 +252,7 @@ export default function StudentCourseRegistration() {
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+            <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
               {courses.map((course) => (
                 <article
                   key={course.id}
@@ -242,7 +269,11 @@ export default function StudentCourseRegistration() {
                   <button
                     type="button"
                     onClick={() => handleEnroll(course.id)}
-                    disabled={course.isEnrolled || enrollingId !== null}
+                    disabled={
+                      course.isEnrolled || enrollingId !== course.id
+                        ? course.isEnrolled || enrollingId !== null
+                        : false
+                    }
                     className={`mt-5 inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed ${
                       course.isEnrolled
                         ? "bg-emerald-50 text-emerald-700"

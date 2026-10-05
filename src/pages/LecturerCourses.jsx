@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Plus, X, Menu, Loader2, Check } from "lucide-react";
+import { Plus, X, Menu, Loader2, Check, Trash2 } from "lucide-react";
 import logo from "../assets/classpulse-logo.png";
 import LecturerSidebar from "../components/lecturer/LecturerSidebar";
 import { supabase } from "../supabaseClient";
@@ -55,6 +55,7 @@ function LecturerCourses() {
   const [courses, setCourses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
   const [error, setError] = useState(null);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -63,7 +64,7 @@ function LecturerCourses() {
   const [formData, setFormData] = useState({
     code: "",
     title: "",
-    department: "",
+    departments: [],
     level: "100 Level",
     totalStudents: "",
   });
@@ -83,7 +84,6 @@ function LecturerCourses() {
         if (userError) throw userError;
         if (!user) throw new Error("No authenticated user found.");
 
-        // Fetch ONLY courses belonging strictly to this authenticated lecturer's ID
         const { data: rawCourses, error: coursesError } = await supabase
           .from("courses")
           .select("id, course_code, course_name, department, level, total_students")
@@ -169,7 +169,7 @@ function LecturerCourses() {
             id: c.id,
             code: c.course_code,
             title: c.course_name,
-            department: c.department,
+            department: c.department || "General",
             level: c.level,
             attendance,
             students: studentCount,
@@ -228,11 +228,28 @@ function LecturerCourses() {
     }));
   };
 
+  const handleDepartmentToggle = (dept) => {
+    setFormData((prev) => {
+      const exists = prev.departments.includes(dept);
+      if (exists) {
+        return {
+          ...prev,
+          departments: prev.departments.filter((d) => d !== dept),
+        };
+      } else {
+        return {
+          ...prev,
+          departments: [...prev.departments, dept],
+        };
+      }
+    });
+  };
+
   const handleSubmit = async (event) => {
     event.preventDefault();
 
-    if (!formData.department) {
-      setError("Please select a department.");
+    if (formData.departments.length === 0) {
+      setError("Please select at least one department.");
       return;
     }
 
@@ -248,7 +265,6 @@ function LecturerCourses() {
       if (userError) throw userError;
       if (!user) throw new Error("User authentication context missing.");
 
-      // Ensure profile row exists for foreign key constraints
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
         .select("id, full_name")
@@ -282,14 +298,15 @@ function LecturerCourses() {
         user.email?.split("@")[0] ||
         "Lecturer";
 
-      // Insert course tied explicitly to the authenticated user's ID
+      const combinedDepartments = formData.departments.join(", ");
+
       const { data, error: insertError } = await supabase
         .from("courses")
         .insert([
           {
             course_code: formData.code.trim(),
             course_name: formData.title.trim(),
-            department: formData.department,
+            department: combinedDepartments,
             level: formData.level,
             total_students: formData.totalStudents ? parseInt(formData.totalStudents, 10) : 0,
             lecturer_id: user.id,
@@ -305,7 +322,7 @@ function LecturerCourses() {
         id: data.id,
         code: data.course_code,
         title: data.course_name,
-        department: data.department,
+        department: combinedDepartments,
         level: data.level,
         attendance: 0,
         students: data.total_students ?? 0,
@@ -317,7 +334,7 @@ function LecturerCourses() {
       setFormData({
         code: "",
         title: "",
-        department: "",
+        departments: [],
         level: "100 Level",
         totalStudents: "",
       });
@@ -332,6 +349,34 @@ function LecturerCourses() {
       }
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  // Handler to delete/cancel a course
+  const handleDeleteCourse = async (courseId, courseCode) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to cancel/delete ${courseCode}? This will also remove associated schedules and records.`
+    );
+    if (!confirmed) return;
+
+    try {
+      setDeletingId(courseId);
+      setError(null);
+
+      const { error: deleteError } = await supabase
+        .from("courses")
+        .delete()
+        .eq("id", courseId);
+
+      if (deleteError) throw deleteError;
+
+      // Remove course from local state view
+      setCourses((prev) => prev.filter((c) => c.id !== courseId));
+    } catch (err) {
+      console.error("Error deleting course:", err);
+      setError(err.message || "Failed to delete course.");
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -414,50 +459,70 @@ function LecturerCourses() {
             <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
               {courses.map((course) => {
                 const attendanceIsLow = course.attendance < 80;
+                const isDeleting = deletingId === course.id;
 
                 return (
                   <article
                     key={course.id}
-                    className="rounded-xl border border-border bg-surface p-4 shadow-sm transition hover:shadow-md"
+                    className="relative rounded-xl border border-border bg-surface p-4 shadow-sm transition hover:shadow-md flex flex-col justify-between"
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <h2 className="text-sm font-bold text-text-primary sm:text-base">
-                          {course.code}
-                        </h2>
-                        <p className="mt-1 text-xs leading-5 text-text-secondary sm:text-sm">
-                          {course.title}
-                        </p>
-                        <p className="mt-2 text-xs text-text-secondary">
-                          {course.department} · {course.level}
-                        </p>
+                    <div>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h2 className="text-sm font-bold text-text-primary sm:text-base">
+                            {course.code}
+                          </h2>
+                          <p className="mt-1 text-xs leading-5 text-text-secondary sm:text-sm">
+                            {course.title}
+                          </p>
+                          <p className="mt-2 text-xs text-text-secondary">
+                            {course.department} · {course.level}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`whitespace-nowrap rounded-full px-3 py-1 text-xs font-semibold ${
+                              attendanceIsLow
+                                ? "bg-amber-100 text-amber-700"
+                                : "bg-emerald-100 text-emerald-700"
+                            }`}
+                          >
+                            {course.attendance}% avg
+                          </span>
+
+                          {/* Delete / Cancel Course Button */}
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteCourse(course.id, course.code)}
+                            disabled={isDeleting}
+                            title="Cancel / Delete Course"
+                            className="rounded-lg p-1.5 text-text-secondary hover:bg-red-50 hover:text-red-600 transition disabled:opacity-50"
+                          >
+                            {isDeleting ? (
+                              <Loader2 size={16} className="animate-spin text-red-600" />
+                            ) : (
+                              <Trash2 size={16} />
+                            )}
+                          </button>
+                        </div>
                       </div>
 
-                      <span
-                        className={`whitespace-nowrap rounded-full px-3 py-1 text-xs font-semibold ${
-                          attendanceIsLow
-                            ? "bg-amber-100 text-amber-700"
-                            : "bg-emerald-100 text-emerald-700"
-                        }`}
-                      >
-                        {course.attendance}% avg
-                      </span>
-                    </div>
-
-                    <div className="mt-5">
-                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
-                        <div
-                          className={`h-full rounded-full ${
-                            attendanceIsLow ? "bg-amber-500" : "bg-emerald-500"
-                          }`}
-                          style={{
-                            width: `${course.attendance}%`,
-                          }}
-                        />
+                      <div className="mt-5">
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
+                          <div
+                            className={`h-full rounded-full ${
+                              attendanceIsLow ? "bg-amber-500" : "bg-emerald-500"
+                            }`}
+                            style={{
+                              width: `${course.attendance}%`,
+                            }}
+                          />
+                        </div>
                       </div>
                     </div>
 
-                    <div className="mt-3 flex items-center justify-between text-xs text-text-secondary">
+                    <div className="mt-3 flex items-center justify-between text-xs text-text-secondary pt-2 border-t border-border/50">
                       <span>{course.students} students</span>
                       <span>{course.sessions} sessions</span>
                     </div>
@@ -479,7 +544,7 @@ function LecturerCourses() {
                   Add New Course
                 </h2>
                 <p className="mt-1 text-sm text-text-secondary">
-                  Enter course details and select a department.
+                  Enter course details and select one or more departments.
                 </p>
               </div>
 
@@ -535,11 +600,16 @@ function LecturerCourses() {
                 />
               </div>
 
-              {/* Department Single Select Picker */}
+              {/* Department Multi-Select Picker */}
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-text-primary">
-                  Department
-                </label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-sm font-medium text-text-primary">
+                    Departments (Select one or more)
+                  </label>
+                  <span className="text-xs text-text-secondary">
+                    {formData.departments.length} selected
+                  </span>
+                </div>
 
                 <div className="max-h-48 overflow-y-auto rounded-lg border border-border bg-background p-3 space-y-3">
                   {AAUA_FACULTIES.map((group) => (
@@ -549,18 +619,13 @@ function LecturerCourses() {
                       </p>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pl-1">
                         {group.departments.map((dept) => {
-                          const isSelected = formData.department === dept;
+                          const isSelected = formData.departments.includes(dept);
 
                           return (
                             <button
                               key={dept}
                               type="button"
-                              onClick={() =>
-                                setFormData((prev) => ({
-                                  ...prev,
-                                  department: dept,
-                                }))
-                              }
+                              onClick={() => handleDepartmentToggle(dept)}
                               disabled={submitting}
                               className={`flex items-center justify-between rounded-md px-2.5 py-1.5 text-xs font-medium text-left transition ${
                                 isSelected
@@ -642,7 +707,7 @@ function LecturerCourses() {
 
                 <button
                   type="submit"
-                  disabled={submitting || !formData.department}
+                  disabled={submitting || formData.departments.length === 0}
                   className="flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
                 >
                   {submitting ? (

@@ -1,46 +1,13 @@
 import { useState, useEffect, useCallback } from "react";
 import { LuMenu, LuLoader, LuBookOpen } from "react-icons/lu";
-import { Check, Plus } from "lucide-react";
 import StudentSidebar from "../components/Student/StudentSidebar";
 import logo from "../assets/classpulse-logo.png";
 import { supabase } from "../supabaseClient";
-
-const normalizeValue = (value) =>
-  String(value || "")
-    .trim()
-    .toLowerCase();
-
-const normalizeLevel = (value) => {
-  const raw = String(value || "")
-    .trim()
-    .toLowerCase();
-  const match = raw.match(/(\d{1,3})/);
-  return match ? match[1] : raw.replace(/\s*level\s*/g, "").replace(/\s+/g, "");
-};
-
-const matchesStudentContext = (course, student) => {
-  if (!student) return true;
-
-  const hasDepartment = Boolean(student.department);
-  const hasLevel = Boolean(student.level);
-
-  if (!hasDepartment && !hasLevel) return true;
-
-  const departmentMatches =
-    !hasDepartment ||
-    normalizeValue(course.department) === normalizeValue(student.department);
-
-  const levelMatches =
-    !hasLevel || normalizeLevel(course.level) === normalizeLevel(student.level);
-
-  return departmentMatches && levelMatches;
-};
 
 function StudentCourses() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [courses, setCourses] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [enrollingCourseId, setEnrollingCourseId] = useState(null);
   const [error, setError] = useState("");
 
   const fetchStudentCourses = useCallback(async (isInitial = false) => {
@@ -58,52 +25,37 @@ function StudentCourses() {
 
       if (userError || !user) throw userError || new Error("User not found");
 
-      // Fetch student profile for department and level
-      const { data: profile, error: profileError } = await supabase
-        .from("profiles")
-        .select("department, level")
-        .eq("id", user.id)
-        .maybeSingle();
+      // 2. Fetch student enrollments / registrations
+      const { data: enrollmentResult, error: enrollmentError } = await supabase
+        .from("enrollments")
+        .select("course_id")
+        .eq("student_id", user.id);
 
-      if (profileError) {
-        console.warn("Profile fetch warning:", profileError.message);
+      if (enrollmentError) throw enrollmentError;
+
+      const enrolledCourseIds = (enrollmentResult || []).map(
+        (enrollment) => enrollment.course_id
+      );
+
+      if (enrolledCourseIds.length === 0) {
+        setCourses([]);
+        setLoading(false);
+        return;
       }
 
-      const department =
-        profile?.department || user.user_metadata?.department || "";
-      const level = profile?.level || user.user_metadata?.level || "";
-      const resolvedStudent = { department, level };
+      // 3. Fetch only the courses the student is registered for
+      const { data: rawCourses, error: coursesError } = await supabase
+        .from("courses")
+        .select("id, course_code, course_name, department, level")
+        .in("id", enrolledCourseIds)
+        .order("course_code", { ascending: true });
 
-      // 2. Load all courses and student enrollments in parallel
-      const [coursesResult, enrollmentResult] = await Promise.all([
-        supabase
-          .from("courses")
-          .select("id, course_code, course_name, department, level")
-          .order("course_code", { ascending: true }),
-        supabase
-          .from("enrollments")
-          .select("course_id")
-          .eq("student_id", user.id),
-      ]);
+      if (coursesError) throw coursesError;
 
-      if (coursesResult.error) throw coursesResult.error;
-      if (enrollmentResult.error) throw enrollmentResult.error;
-
-      const enrolledCourseIds = new Set(
-        (enrollmentResult.data || []).map((enrollment) => enrollment.course_id),
-      );
-
-      const allCourses = coursesResult.data || [];
-
-      // Only show the student’s relevant courses, while keeping already enrolled ones visible.
-      const displayCourses = allCourses.filter(
-        (course) =>
-          enrolledCourseIds.has(course.id) ||
-          matchesStudentContext(course, resolvedStudent),
-      );
+      const displayCourses = rawCourses || [];
       const courseIds = displayCourses.map((course) => course.id);
 
-      // 3. Safely fetch class sessions
+      // 4. Safely fetch class sessions for these courses
       let sessionsData = [];
       if (courseIds.length > 0) {
         const { data: sessions, error: sessionsError } = await supabase
@@ -118,7 +70,7 @@ function StudentCourses() {
         }
       }
 
-      // 4. Safely fetch attendance records for this student
+      // 5. Safely fetch attendance records for this student
       let attendanceData = [];
       const { data: attendance, error: attendanceError } = await supabase
         .from("attendance_records")
@@ -128,25 +80,23 @@ function StudentCourses() {
       if (attendanceError) {
         console.warn(
           "Attendance records fetch warning:",
-          attendanceError.message,
+          attendanceError.message
         );
       } else {
         attendanceData = attendance || [];
       }
 
-      // 5. Calculate attendance percentage and breakdown per course
+      // 6. Calculate attendance percentage and breakdown per registered course
       const processedCourses = displayCourses.map((course) => {
-        const isEnrolled = enrolledCourseIds.has(course.id);
         const courseSessionIds = sessionsData
           .filter((session) => session.course_id === course.id)
           .map((session) => session.id);
 
-        const total = isEnrolled ? courseSessionIds.length : 0;
+        const total = courseSessionIds.length;
         const attended = attendanceData.filter(
           (record) =>
-            isEnrolled &&
             courseSessionIds.includes(record.class_session_id) &&
-            record.status?.toLowerCase() === "present",
+            record.status?.toLowerCase() === "present"
         ).length;
         const missed = Math.max(0, total - attended);
 
@@ -170,6 +120,8 @@ function StudentCourses() {
           id: course.id,
           code: course.course_code,
           title: course.course_name,
+          department: course.department,
+          level: course.level,
           percent,
           attended,
           missed,
@@ -177,45 +129,17 @@ function StudentCourses() {
           badgeBg,
           badgeText,
           barColor,
-          isEnrolled,
         };
       });
 
       setCourses(processedCourses);
     } catch (err) {
-      console.error("Error fetching course attendance metrics:", err);
-      setError(err.message || "Could not load courses.");
+      console.error("Error fetching registered courses:", err);
+      setError(err.message || "Could not load your registered courses.");
     } finally {
       setLoading(false);
     }
   }, []);
-
-  const handleEnroll = async (courseId) => {
-    try {
-      setEnrollingCourseId(courseId);
-      setError("");
-
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
-
-      if (userError || !user) throw userError || new Error("User not found");
-
-      const { error: enrollError } = await supabase.from("enrollments").insert({
-        course_id: courseId,
-        student_id: user.id,
-      });
-
-      if (enrollError) throw enrollError;
-      await fetchStudentCourses(false);
-    } catch (err) {
-      console.error("Error enrolling in course:", err);
-      setError(err.message || "Could not enroll in this course.");
-    } finally {
-      setEnrollingCourseId(null);
-    }
-  };
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -266,9 +190,14 @@ function StudentCourses() {
         {/* Main Content */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8">
           <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <h1 className="text-xl font-bold text-text-primary sm:text-2xl">
-              Courses
-            </h1>
+            <div>
+              <h1 className="text-xl font-bold text-text-primary sm:text-2xl">
+                My Registered Courses
+              </h1>
+              <p className="mt-1 text-sm text-text-secondary">
+                View your registered courses and monitor your attendance standing.
+              </p>
+            </div>
           </div>
 
           {error && (
@@ -281,16 +210,16 @@ function StudentCourses() {
           {loading ? (
             <div className="flex items-center justify-center py-20 text-text-secondary">
               <LuLoader className="mr-2 h-6 w-6 animate-spin text-primary" />
-              <p className="text-sm">Loading courses...</p>
+              <p className="text-sm">Loading your registered courses...</p>
             </div>
           ) : courses.length === 0 ? (
             <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-surface py-16 text-center">
               <LuBookOpen className="mb-3 h-10 w-10 text-slate-400" />
               <p className="font-semibold text-text-primary">
-                No courses found
+                No registered courses found
               </p>
               <p className="mt-1 text-xs text-text-secondary">
-                No courses are currently available in the system.
+                You have not registered for any courses yet. Please visit the course registration page to add courses.
               </p>
             </div>
           ) : (
@@ -298,7 +227,7 @@ function StudentCourses() {
               {courses.map((course) => (
                 <div
                   key={course.id}
-                  className="rounded-xl border border-border bg-surface p-4 shadow-sm transition hover:shadow-md flex flex-col justify-between"
+                  className="rounded-xl border border-border bg-surface p-5 shadow-sm transition hover:shadow-md flex flex-col justify-between"
                 >
                   <div>
                     {/* Course Header */}
@@ -307,9 +236,14 @@ function StudentCourses() {
                         <h2 className="text-lg font-bold text-text-primary">
                           {course.code}
                         </h2>
-                        <p className="mt-1 text-xs text-text-secondary">
+                        <p className="mt-1 text-xs font-medium text-text-primary">
                           {course.title}
                         </p>
+                        {course.department && (
+                          <p className="mt-1 text-xs text-text-secondary">
+                            {course.department} {course.level ? `• ${course.level}` : ""}
+                          </p>
+                        )}
                       </div>
 
                       <span
@@ -330,44 +264,12 @@ function StudentCourses() {
                     </div>
 
                     {/* Metrics Breakdown */}
-                    {course.isEnrolled ? (
-                      <div className="mt-3 flex items-center justify-between text-xs text-text-secondary">
-                        <span>{course.attended} attended</span>
-                        <span>{course.missed} missed</span>
-                        <span>{course.total} total</span>
-                      </div>
-                    ) : (
-                      <p className="mt-3 text-xs text-text-secondary">
-                        Enroll to see this course's schedule and attendance.
-                      </p>
-                    )}
+                    <div className="mt-4 flex items-center justify-between text-xs text-text-secondary pt-3 border-t border-border/50">
+                      <span>{course.attended} attended</span>
+                      <span>{course.missed} missed</span>
+                      <span>{course.total} total sessions</span>
+                    </div>
                   </div>
-
-                  <button
-                    type="button"
-                    disabled={
-                      course.isEnrolled || enrollingCourseId === course.id
-                    }
-                    onClick={() => handleEnroll(course.id)}
-                    className={`mt-4 inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition ${
-                      course.isEnrolled
-                        ? "bg-emerald-50 text-emerald-700 cursor-default"
-                        : "bg-primary text-white hover:opacity-90 disabled:opacity-60"
-                    }`}
-                  >
-                    {course.isEnrolled ? (
-                      <>
-                        <Check size={16} /> Enrolled
-                      </>
-                    ) : (
-                      <>
-                        <Plus size={16} />
-                        {enrollingCourseId === course.id
-                          ? "Enrolling..."
-                          : "Enroll"}
-                      </>
-                    )}
-                  </button>
                 </div>
               ))}
             </div>

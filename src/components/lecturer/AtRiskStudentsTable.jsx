@@ -320,7 +320,7 @@ function AtRiskStudentsTable() {
         </div>
       ) : atRiskStudents.length === 0 ? (
         <div className="p-8 text-center text-sm text-text-secondary">
-          🎉 No students are currently at risk! All enrolled students are
+           No students are currently at risk! All enrolled students are
           maintaining regular attendance.
         </div>
       ) : (

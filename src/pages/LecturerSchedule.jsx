@@ -1,9 +1,53 @@
 import { useState, useEffect, useCallback } from "react";
-import { Plus, X, CalendarDays, Menu, Loader2 } from "lucide-react";
+import { Plus, X, CalendarDays, Menu, Loader2, Check } from "lucide-react";
 
 import logo from "../assets/classpulse-logo.png";
 import LecturerSidebar from "../components/lecturer/LecturerSidebar";
 import { supabase } from "../supabaseClient";
+
+// AAUA Departments grouped by Faculty for selection
+const AAUA_FACULTIES = [
+  {
+    faculty: "Faculty of Science",
+    departments: ["Computer Science", "Microbiology", "Physics", "Chemistry", "Mathematics", "Plant Science and Biotechnology", "Animal and Environmental Biology"],
+  },
+  {
+    faculty: "Faculty of Computing",
+    departments: ["Cyber Security", "Software Engineering", "Information Technology", "Computer Science (Computing)"],
+  },
+  {
+    faculty: "Faculty of Administration and Management Sciences",
+    departments: ["Accounting", "Business Administration", "Banking and Finance", "Public Administration", "Marketing"],
+  },
+  {
+    faculty: "Faculty of Social Sciences",
+    departments: ["Economics", "Mass Communication", "Political Science", "Sociology", "Geography and Planning Science"],
+  },
+  {
+    faculty: "Faculty of Education",
+    departments: ["Science Education", "Arts Education", "Educational Management", "Guidance and Counselling", "Human Kinetics and Health Education"],
+  },
+  {
+    faculty: "Faculty of Arts",
+    departments: ["English and Literary Studies", "History and International Studies", "Philosophy", "Religious Studies", "Linguistics and African Languages"],
+  },
+  {
+    faculty: "Faculty of Law",
+    departments: ["Public Law", "Private and Property Law", "International Law and Jurisprudence"],
+  },
+  {
+    faculty: "Faculty of Agriculture",
+    departments: ["Agricultural Economics and Extension", "Animal Science", "Crop Science", "Soil Science"],
+  },
+  {
+    faculty: "Faculty of Allied Health Sciences",
+    departments: ["Nursing Science", "Medical Laboratory Science"],
+  },
+  {
+    faculty: "Faculty of Environmental Designs",
+    departments: ["Architecture", "Estate Management", "Surveying and Geoinformatics"],
+  },
+];
 
 const DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
@@ -28,7 +72,7 @@ function LecturerSchedule() {
 
   const [formData, setFormData] = useState({
     courseId: "",
-    department: "",
+    department: [],
     level: "",
     lecturerName: "",
     day: "",
@@ -217,19 +261,26 @@ function LecturerSchedule() {
               getMinutesFromTime(a.start_time) -
               getMinutesFromTime(b.start_time),
           )
-          .map((item) => ({
-            id: item.id,
-            course: item.courses?.course_code || "N/A",
-            courseTitle: item.courses?.course_name || "",
-            time: `${formatDisplayTime(item.start_time)} - ${formatDisplayTime(
-              item.end_time,
-            )}`,
-            venue: item.venue || "TBD",
-            students: item.student_count || 0,
-            department: item.department || "N/A",
-            level: item.level || "N/A",
-            lecturerName: item.lecturer_name || "Not specified",
-          }));
+          .map((item) => {
+            let deptDisplay = item.department;
+            if (Array.isArray(item.department)) {
+              deptDisplay = item.department.join(", ");
+            }
+
+            return {
+              id: item.id,
+              course: item.courses?.course_code || "N/A",
+              courseTitle: item.courses?.course_name || "",
+              time: `${formatDisplayTime(item.start_time)} - ${formatDisplayTime(
+                item.end_time,
+              )}`,
+              venue: item.venue || "TBD",
+              students: item.student_count || 0,
+              department: deptDisplay || "N/A",
+              level: item.level || "N/A",
+              lecturerName: item.lecturer_name || "Not specified",
+            };
+          });
 
         return {
           day,
@@ -258,11 +309,10 @@ function LecturerSchedule() {
     setFormData((prev) => {
       const updated = { ...prev, [name]: value };
 
-      // Auto-populate department, level, and lecturer name if course is selected
+      // Auto-populate level, and lecturer name if course is selected
       if (name === "courseId") {
         const selectedCourse = availableCourses.find((c) => c.id === value);
         if (selectedCourse) {
-          updated.department = selectedCourse.department || "";
           updated.level = selectedCourse.level || "";
           updated.lecturerName = selectedCourse.lecturerName || "";
         }
@@ -271,12 +321,29 @@ function LecturerSchedule() {
     });
   };
 
+  const handleDepartmentToggle = (dept) => {
+    setFormData((prev) => {
+      const exists = prev.department.includes(dept);
+      if (exists) {
+        return {
+          ...prev,
+          department: prev.department.filter((d) => d !== dept),
+        };
+      } else {
+        return {
+          ...prev,
+          department: [...prev.department, dept],
+        };
+      }
+    });
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
     if (
       !formData.courseId ||
-      !formData.department ||
+      formData.department.length === 0 ||
       !formData.level ||
       !formData.lecturerName ||
       !formData.day ||
@@ -285,7 +352,7 @@ function LecturerSchedule() {
       !formData.venue ||
       !formData.students
     ) {
-      setError("Please fill in all fields.");
+      setError("Please fill in all fields and select at least one department.");
       return;
     }
 
@@ -298,10 +365,13 @@ function LecturerSchedule() {
       setSubmitting(true);
       setError("");
 
+      // Combine multiple selected departments into a comma-separated string (or pass as array if your backend uses text[])
+      const departmentsToSave = formData.department.join(", ");
+
       const { error: insertError } = await supabase.from("schedules").insert([
         {
           course_id: formData.courseId,
-          department: formData.department,
+          department: departmentsToSave,
           level: formData.level,
           lecturer_name: formData.lecturerName,
           day: formData.day,
@@ -320,7 +390,7 @@ function LecturerSchedule() {
       // Reset Form State
       setFormData({
         courseId: "",
-        department: "",
+        department: [],
         level: "",
         lecturerName: "",
         day: "",
@@ -467,8 +537,8 @@ function LecturerSchedule() {
       {/* Schedule Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-surface p-6 shadow-xl scrollbar-none">
-            <div className="mb-6 flex items-center justify-between">
+          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-surface p-6 shadow-xl scrollbar-none flex flex-col">
+            <div className="mb-6 flex items-center justify-between shrink-0">
               <div>
                 <h2 className="text-xl font-bold text-text-primary">
                   Schedule New Class
@@ -487,7 +557,7 @@ function LecturerSchedule() {
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handleSubmit} className="space-y-4 overflow-y-auto pr-1 flex-1">
               {/* Course Selector */}
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-text-primary">
@@ -514,24 +584,48 @@ function LecturerSchedule() {
                 )}
               </div>
 
-              {/* Department Selector */}
+              {/* Department Multi-Select Picker */}
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-text-primary">
-                  Department
-                </label>
-                <select
-                  name="department"
-                  value={formData.department}
-                  onChange={handleChange}
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
-                >
-                  <option value="">Select department</option>
-                  <option value="Computer Science">Computer Science</option>
-                  <option value="Information Technology">Information Technology</option>
-                  <option value="Software Engineering">Software Engineering</option>
-                  <option value="Cyber Security">Cyber Security</option>
-                  {/* Add more department options as needed */}
-                </select>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-sm font-medium text-text-primary">
+                    Departments (Select one or more)
+                  </label>
+                  <span className="text-xs text-text-secondary">
+                    {formData.department.length} selected
+                  </span>
+                </div>
+
+                <div className="max-h-48 overflow-y-auto rounded-lg border border-border bg-background p-3 space-y-3">
+                  {AAUA_FACULTIES.map((group) => (
+                    <div key={group.faculty} className="space-y-1.5">
+                      <p className="text-xs font-bold text-text-secondary uppercase tracking-wider">
+                        {group.faculty}
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pl-1">
+                        {group.departments.map((dept) => {
+                          const isSelected = formData.department.includes(dept);
+
+                          return (
+                            <button
+                              key={dept}
+                              type="button"
+                              onClick={() => handleDepartmentToggle(dept)}
+                              disabled={submitting}
+                              className={`flex items-center justify-between rounded-md px-2.5 py-1.5 text-xs font-medium text-left transition ${
+                                isSelected
+                                  ? "bg-primary text-white"
+                                  : "bg-surface hover:bg-border/50 text-text-primary border border-border"
+                              }`}
+                            >
+                              <span className="truncate pr-2">{dept}</span>
+                              {isSelected && <Check size={14} className="shrink-0" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
 
               {/* Level Selector */}
@@ -546,11 +640,12 @@ function LecturerSchedule() {
                   className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
                 >
                   <option value="">Select level</option>
-                  <option value="100">100 Level</option>
-                  <option value="200">200 Level</option>
-                  <option value="300">300 Level</option>
-                  <option value="400">400 Level</option>
-                  <option value="500">500 Level</option>
+                  <option value="100 Level">100 Level</option>
+                  <option value="200 Level">200 Level</option>
+                  <option value="300 Level">300 Level</option>
+                  <option value="400 Level">400 Level</option>
+                  <option value="500 Level">500 Level</option>
+                  <option value="600 Level">600 Level</option>
                 </select>
               </div>
 

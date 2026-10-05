@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import LecturerSidebar from "../components/lecturer/LecturerSidebar";
 import LecturerHeader from "../components/lecturer/LecturerHeader";
 import StatisticsCards from "../components/lecturer/StatCard";
@@ -23,120 +24,73 @@ function LecturerDashboard() {
     overallAttendanceRate: 0,
   });
 
+  const navigate = useNavigate();
+
   // Memoize fetchDashboardStats using useCallback to keep reference stable
   const fetchDashboardStats = useCallback(async () => {
     try {
       setError(null);
 
-      // 1. Get authenticated user
+      // 1. Restore the current session before reading authenticated data.
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      if (sessionError) throw sessionError;
+      if (!session) {
+        setLoading(false);
+        setError("Auth session missing!");
+        navigate("/login", { replace: true });
+        return;
+      }
+
       const {
         data: { user },
         error: userError,
       } = await supabase.auth.getUser();
 
       if (userError) throw userError;
-      if (!user) throw new Error("No active session found.");
+      if (!user) {
+        setLoading(false);
+        setError("Auth session missing!");
+        navigate("/login", { replace: true });
+        return;
+      }
 
       // 2. Fetch courses assigned to this lecturer.
       const resolveCourseIds = async () => {
-        const { data: profileData, error: profileError } = await supabase
-          .from("profiles")
-          .select("full_name")
-          .eq("id", user.id)
-          .maybeSingle();
-
-        if (profileError) {
-          console.warn(
-            "Profile lookup failed during fallback course resolution:",
-            profileError.message,
-          );
-        }
-
-        const candidateNames = [
-          profileData?.full_name,
-          user.user_metadata?.full_name,
-          user.user_metadata?.name,
-          user.email?.split("@")[0],
-        ]
-          .map((value) => value?.trim())
-          .filter(Boolean);
-
         const { data: lecturerCourses = [], error: directCoursesError } =
           await supabase
             .from("courses")
-            .select("id")
+            .select("id, lecturer_id")
             .eq("lecturer_id", user.id);
 
         if (directCoursesError) throw directCoursesError;
 
-        let courseIds = [
-          ...new Set((lecturerCourses || []).map((course) => course.id)),
+        return [
+          ...new Set(
+            (lecturerCourses || [])
+              .filter((course) => course?.lecturer_id === user.id)
+              .map((course) => course.id)
+              .filter(Boolean),
+          ),
         ];
-
-        for (const candidateName of [...new Set(candidateNames)]) {
-          if (courseIds.length > 0) break;
-
-          const { data: namedCourses = [], error: namedCoursesError } =
-            await supabase
-              .from("courses")
-              .select("id")
-              .eq("lecturer_name", candidateName);
-
-          if (namedCoursesError) {
-            console.warn(
-              "Fallback lecturer-name course lookup failed:",
-              namedCoursesError.message,
-            );
-            continue;
-          }
-
-          courseIds = [
-            ...new Set([
-              ...courseIds,
-              ...namedCourses.map((course) => course.id),
-            ]),
-          ];
-        }
-
-        if (courseIds.length === 0) {
-          const { data: openSessions = [], error: openSessionError } =
-            await supabase
-              .from("class_sessions")
-              .select("course_id, courses ( lecturer_id, lecturer_name )")
-              .eq("attendance_open", true);
-
-          if (openSessionError) {
-            console.warn(
-              "Open-session fallback lookup failed:",
-              openSessionError.message,
-            );
-          }
-
-          const candidateSet = new Set(
-            candidateNames.map((name) => name.toLowerCase()),
-          );
-          courseIds = [
-            ...new Set(
-              (openSessions || [])
-                .filter((session) => {
-                  const course = session.courses;
-                  if (!course) return false;
-                  return (
-                    course.lecturer_id === user.id ||
-                    (course.lecturer_name &&
-                      candidateSet.has(course.lecturer_name.toLowerCase()))
-                  );
-                })
-                .map((session) => session.course_id)
-                .filter(Boolean),
-            ),
-          ];
-        }
-
-        return [...new Set(courseIds)];
       };
 
       const courseIds = await resolveCourseIds();
+
+      if (!courseIds.length) {
+        setStats({
+          totalCourses: 0,
+          totalStudents: 0,
+          activeSessions: 0,
+          overallAttendanceRate: 0,
+        });
+        setRecentAttendance([]);
+        setLoading(false);
+        return;
+      }
       const { data: courses = [], error: coursesError } = await supabase
         .from("courses")
         .select("id, course_code")
@@ -366,7 +320,7 @@ function LecturerDashboard() {
         { event: "*", schema: "public", table: "attendance_records" },
         () => {
           fetchDashboardStats();
-        }
+        },
       )
       .subscribe();
 

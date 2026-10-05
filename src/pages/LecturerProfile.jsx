@@ -48,10 +48,10 @@ function LecturerProfile() {
         if (userError) throw userError;
         if (!user) throw new Error("No authenticated user found.");
 
-        // 2. Query lecturer profile details matching existing schema columns
+        // 2. Query lecturer profile details including faculty
         const { data: profile, error: profileError } = await supabase
           .from("profiles")
-          .select("full_name, staff_id, department, academic_session, role")
+          .select("full_name, staff_id, department, faculty, academic_session, role")
           .eq("id", user.id)
           .single();
 
@@ -83,7 +83,8 @@ function LecturerProfile() {
 
           const resolvedRole = profile?.role || userMetadata.role || "lecturer";
 
-          const resolvedFaculty = userMetadata.faculty || "N/A";
+          const resolvedFaculty =
+            profile?.faculty || userMetadata.faculty || "N/A";
 
           const resolvedDepartment =
             profile?.department || userMetadata.department || "N/A";

@@ -1,26 +1,10 @@
-import logo from "../assets/classpulse-logo.png";
-
 function Footer() {
   return (
     <footer className="border-t border-border bg-text-primary">
 
       <div className="mx-auto max-w-7xl px-6 py-14">
 
-        <div className="grid gap-10 md:grid-cols-2 lg:grid-cols-4">
-
-          {/* Brand */}
-          <div className="lg:col-span-1 pr-10">
-            <img
-              src={logo}
-              alt="ClassPulse"
-              className="h-14 w-auto rounded-2xl object-contain"
-            />
-
-            <p className="mt-5 max-w-xs text-sm leading-6 text-text-secondary">
-              A smarter way to manage class attendance, monitor student
-              engagement, and identify attendance problems early.
-            </p>
-          </div>
+        <div className="grid gap-20 md:grid-cols-2 lg:grid-cols-4">
 
           {/* Navigation */}
           <div>
@@ -70,24 +54,6 @@ function Footer() {
                   href="#"
                   className="text-sm text-text-secondary transition hover:text-primary"
                 >
-                  Student Dashboard
-                </a>
-              </li>
-
-              <li>
-                <a
-                  href="#"
-                  className="text-sm text-text-secondary transition hover:text-primary"
-                >
-                  Lecturer Dashboard
-                </a>
-              </li>
-
-              <li>
-                <a
-                  href="#"
-                  className="text-sm text-text-secondary transition hover:text-primary"
-                >
                   Attendance
                 </a>
               </li>
@@ -116,7 +82,7 @@ function Footer() {
               </li>
 
               <li className="text-sm text-text-secondary">
-                Phone: +234 9070977040
+                Phone: +234 907*******
               </li>
 
               <li className="text-sm text-text-secondary">

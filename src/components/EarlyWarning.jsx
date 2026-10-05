@@ -31,12 +31,12 @@ function EarlyWarning() {
               </span>
 
               <span className="text-lg font-bold text-primary">
-                70%
+                75%
               </span>
             </div>
 
             <div className="h-3 overflow-hidden rounded-full bg-border">
-              <div className="h-full w-[70%] rounded-full bg-primary"></div>
+              <div className="h-full w-[75%] rounded-full bg-primary"></div>
             </div>
           </div>
 

@@ -95,14 +95,12 @@ function StudentCourses() {
 
       const allCourses = coursesResult.data || [];
 
-      // Filter courses matching student context or already enrolled
-      const filteredCourses = allCourses.filter(
+      // Only show the student’s relevant courses, while keeping already enrolled ones visible.
+      const displayCourses = allCourses.filter(
         (course) =>
           enrolledCourseIds.has(course.id) ||
           matchesStudentContext(course, resolvedStudent),
       );
-
-      const displayCourses = filteredCourses.length > 0 ? filteredCourses : allCourses;
       const courseIds = displayCourses.map((course) => course.id);
 
       // 3. Safely fetch class sessions
@@ -128,7 +126,10 @@ function StudentCourses() {
         .eq("student_id", user.id);
 
       if (attendanceError) {
-        console.warn("Attendance records fetch warning:", attendanceError.message);
+        console.warn(
+          "Attendance records fetch warning:",
+          attendanceError.message,
+        );
       } else {
         attendanceData = attendance || [];
       }
@@ -139,7 +140,7 @@ function StudentCourses() {
         const courseSessionIds = sessionsData
           .filter((session) => session.course_id === course.id)
           .map((session) => session.id);
-          
+
         const total = isEnrolled ? courseSessionIds.length : 0;
         const attended = attendanceData.filter(
           (record) =>

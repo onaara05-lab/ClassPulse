@@ -409,7 +409,7 @@ function LecturerSessions() {
               }`}
             >
               {!activeSession && <Plus size={18} />}
-              {activeSession ? "● Session Active" : "+ New Session"}
+              {activeSession ? "● Session Active" : "New Session"}
             </button>
           </div>
 

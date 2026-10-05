@@ -17,20 +17,21 @@ const normalizeLevel = (value) => {
 };
 
 const matchesStudentContext = (course, student) => {
-  if (!student) return true;
+  if (!student) return false;
 
-  const hasDepartment = Boolean(student.department);
-  const hasLevel = Boolean(student.level);
+  const studentDept = normalizeValue(student.department);
+  const studentLvl = normalizeLevel(student.level);
 
-  if (!hasDepartment && !hasLevel) return true;
+  // If student profile details are completely missing, don't show arbitrary courses
+  if (!studentDept && !studentLvl) return false;
 
-  const departmentMatches =
-    !hasDepartment ||
-    normalizeValue(course.department) === normalizeValue(student.department);
+  const courseDept = normalizeValue(course.department);
+  const courseLvl = normalizeLevel(course.level);
 
-  const levelMatches =
-    !hasLevel || normalizeLevel(course.level) === normalizeLevel(student.level);
+  const departmentMatches = !studentDept || courseDept === studentDept;
+  const levelMatches = !studentLvl || courseLvl === studentLvl;
 
+  // Both department and level must match strictly
   return departmentMatches && levelMatches;
 };
 
@@ -54,7 +55,7 @@ export default function StudentCourseRegistration() {
       if (userError) throw userError;
       if (!user) throw new Error("Please sign in to register for courses.");
 
-      // Use maybeSingle() to handle cases where profile rows might not exist yet
+      // Fetch profile from database
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
         .select("department, level")
@@ -94,16 +95,12 @@ export default function StudentCourseRegistration() {
 
       const allCourses = coursesResult.data || [];
 
-      // Filter matching student context or already enrolled courses
-      const filteredCourses = allCourses.filter(
+      // Filter courses strictly by department/level, or if already enrolled
+      const displayCourses = allCourses.filter(
         (course) =>
           enrolledIds.has(course.id) ||
           matchesStudentContext(course, resolvedStudent),
       );
-
-      // Fallback to all courses if context filtering returns empty, so the UI is never blank
-      const displayCourses =
-        filteredCourses.length > 0 ? filteredCourses : allCourses;
 
       setCourses(
         displayCourses.map((course) => ({
@@ -141,7 +138,6 @@ export default function StudentCourseRegistration() {
       if (userError) throw userError;
       if (!user) throw new Error("Please sign in to register for courses.");
 
-      // Ensure a profile record exists before enrolling
       const { data: existingProfile } = await supabase
         .from("profiles")
         .select("id")
@@ -265,15 +261,14 @@ export default function StudentCourseRegistration() {
                     <h2 className="mt-3 text-lg font-bold text-text-primary">
                       {course.course_name || "Untitled course"}
                     </h2>
+                    <p className="mt-1 text-xs text-text-secondary">
+                      {course.department} &bull; Level {course.level}
+                    </p>
                   </div>
                   <button
                     type="button"
                     onClick={() => handleEnroll(course.id)}
-                    disabled={
-                      course.isEnrolled || enrollingId !== course.id
-                        ? course.isEnrolled || enrollingId !== null
-                        : false
-                    }
+                    disabled={course.isEnrolled || enrollingId !== null}
                     className={`mt-5 inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition disabled:cursor-not-allowed ${
                       course.isEnrolled
                         ? "bg-emerald-50 text-emerald-700"

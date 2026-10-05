@@ -71,68 +71,6 @@ function LecturerCourses() {
   useEffect(() => {
     let isMounted = true;
 
-    async function resolveLecturerCourseIds(user) {
-      const { data: lecturerCourses = [], error: directCoursesError } =
-        await supabase.from("courses").select("id").eq("lecturer_id", user.id);
-
-      if (directCoursesError) {
-        console.warn(
-          "Direct lecturer course lookup failed:",
-          directCoursesError.message,
-        );
-      }
-
-      let courseIds = [
-        ...new Set((lecturerCourses || []).map((course) => course.id)),
-      ];
-
-      if (courseIds.length === 0) {
-        const { data: profileData, error: profileError } = await supabase
-          .from("profiles")
-          .select("full_name")
-          .eq("id", user.id)
-          .maybeSingle();
-
-        if (profileError) {
-          console.warn("Profile fallback lookup failed:", profileError.message);
-        }
-
-        const candidateNames = [
-          profileData?.full_name,
-          user.user_metadata?.full_name,
-          user.user_metadata?.name,
-          user.email?.split("@")[0],
-        ].filter(Boolean);
-
-        for (const candidateName of [...new Set(candidateNames)]) {
-          const { data: namedCourses = [], error: namedCoursesError } =
-            await supabase
-              .from("courses")
-              .select("id")
-              .eq("lecturer_name", candidateName);
-
-          if (namedCoursesError) {
-            console.warn(
-              "Fallback lecturer-name lookup failed:",
-              namedCoursesError.message,
-            );
-            continue;
-          }
-
-          courseIds = [
-            ...new Set([
-              ...courseIds,
-              ...namedCourses.map((course) => course.id),
-            ]),
-          ];
-
-          if (courseIds.length > 0) break;
-        }
-      }
-
-      return [...new Set(courseIds)];
-    }
-
     async function fetchCoursesData() {
       try {
         setError(null);
@@ -145,20 +83,11 @@ function LecturerCourses() {
         if (userError) throw userError;
         if (!user) throw new Error("No authenticated user found.");
 
-        const courseIds = await resolveLecturerCourseIds(user);
-
-        if (!courseIds || courseIds.length === 0) {
-          if (isMounted) {
-            setCourses([]);
-            setLoading(false);
-          }
-          return;
-        }
-
+        // Fetch ONLY courses belonging strictly to this authenticated lecturer's ID
         const { data: rawCourses, error: coursesError } = await supabase
           .from("courses")
           .select("id, course_code, course_name, department, level, total_students")
-          .in("id", courseIds);
+          .eq("lecturer_id", user.id);
 
         if (coursesError) throw coursesError;
 
@@ -319,7 +248,7 @@ function LecturerCourses() {
       if (userError) throw userError;
       if (!user) throw new Error("User authentication context missing.");
 
-      // 1. Ensure a profile row exists for this user to satisfy the foreign key constraint (courses_lecturer_id_fkey)
+      // Ensure profile row exists for foreign key constraints
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
         .select("id, full_name")
@@ -330,7 +259,6 @@ function LecturerCourses() {
         throw profileError;
       }
 
-      // If profile row doesn't exist yet, lazily create it to prevent FK constraint failures
       if (!profile) {
         const fallbackName =
           user.user_metadata?.full_name ||
@@ -338,19 +266,13 @@ function LecturerCourses() {
           user.email?.split("@")[0] ||
           "Lecturer";
 
-        const { error: insertProfileError } = await supabase
-          .from("profiles")
-          .upsert([
-            {
-              id: user.id,
-              full_name: fallbackName,
-              role: "lecturer",
-            },
-          ]);
-
-        if (insertProfileError) {
-          console.warn("Could not auto-create missing profile record:", insertProfileError.message);
-        }
+        await supabase.from("profiles").upsert([
+          {
+            id: user.id,
+            full_name: fallbackName,
+            role: "lecturer",
+          },
+        ]);
       }
 
       const lecturerName =
@@ -360,7 +282,7 @@ function LecturerCourses() {
         user.email?.split("@")[0] ||
         "Lecturer";
 
-      // 2. Perform course insertion with guaranteed valid lecturer_id reference
+      // Insert course tied explicitly to the authenticated user's ID
       const { data, error: insertError } = await supabase
         .from("courses")
         .insert([
@@ -404,7 +326,7 @@ function LecturerCourses() {
     } catch (err) {
       console.error("Error creating course:", err);
       if (err.code === "23503" || err.message?.includes("foreign key constraint")) {
-        setError("Foreign key error: Your account ID does not have a matching profile record in the database. Please contact support or run a profile seed script.");
+        setError("Foreign key error: Your account ID does not have a matching profile record.");
       } else {
         setError(err.message || "Failed to create new course.");
       }

@@ -2,26 +2,13 @@ import { useState, useEffect, useCallback } from "react";
 import { Menu } from "lucide-react";
 import StudentSidebar from "../components/Student/StudentSidebar";
 import { supabase } from "../supabaseClient";
-import { LuLoader, LuUser, LuSave, LuX } from "react-icons/lu";
-import { MdEdit } from "react-icons/md";
+import { LuLoader, LuUser } from "react-icons/lu";
 import logo from "../assets/classpulse-logo.png";
 
 function StudentProfile() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
-  
-  // Edit mode states
-  const [isEditing, setIsEditing] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [formData, setFormData] = useState({
-    full_name: "",
-    matric_number: "",
-    department: "",
-    faculty: "",
-    level: "",
-    semester: "",
-  });
 
   const fetchStudentProfile = useCallback(async () => {
     try {
@@ -71,16 +58,6 @@ function StudentProfile() {
         level: level ? `${String(level).replace(/\s*level$/i, "")} Level` : "N/A",
         semester: semester || "N/A",
       });
-
-      // Populate form state for editing
-      setFormData({
-        full_name: fullName,
-        matric_number: matricNumber,
-        department: department,
-        faculty: faculty,
-        level: level,
-        semester: semester,
-      });
     } catch (err) {
       console.error("Error loading student profile:", err);
     } finally {
@@ -93,43 +70,6 @@ function StudentProfile() {
       await fetchStudentProfile();
     })();
   }, [fetchStudentProfile]);
-
-  const handleUpdateProfile = async (e) => {
-    e.preventDefault();
-    try {
-      setSaving(true);
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      if (!user) throw new Error("No authenticated user found.");
-
-      const updates = {
-        id: user.id,
-        full_name: formData.full_name,
-        matric_number: formData.matric_number,
-        department: formData.department,
-        faculty: formData.faculty,
-        level: formData.level,
-        semester: formData.semester,
-        updated_at: new Date(),
-      };
-
-      const { error } = await supabase.from("profiles").upsert(updates);
-
-      if (error) throw error;
-
-      // Refresh local profile view after successful save
-      await fetchStudentProfile();
-      setIsEditing(false);
-      alert("Profile updated successfully!");
-    } catch (err) {
-      console.error("Error updating profile:", err);
-      alert("Error updating profile: " + err.message);
-    } finally {
-      setSaving(false);
-    }
-  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -170,19 +110,10 @@ function StudentProfile() {
               <div>
                 <h1 className="text-xl font-bold text-text-primary sm:text-2xl">Profile</h1>
                 <p className="mt-1 text-sm text-text-secondary">
-                  View and manage your student profile details and account information.
+                  View your student profile details and account information.
                 </p>
               </div>
             </div>
-
-            {profile && !loading && !isEditing && (
-              <button
-                onClick={() => setIsEditing(true)}
-                className="flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 transition"
-              >
-                <MdEdit size={16} /> Edit Profile
-              </button>
-            )}
           </div>
 
           {/* Profile Card Container */}
@@ -196,108 +127,6 @@ function StudentProfile() {
               <LuUser className="mb-3 h-10 w-10 text-slate-400" />
               <p className="text-sm font-medium">Unable to load profile information.</p>
             </div>
-          ) : isEditing ? (
-            /* EDIT FORM VIEW */
-            <form onSubmit={handleUpdateProfile} className="max-w-2xl rounded-2xl border border-border bg-surface p-6 shadow-sm sm:p-8 space-y-5">
-              <div className="flex items-center justify-between border-b border-border pb-4">
-                <h2 className="text-lg font-bold text-text-primary">Edit Profile Information</h2>
-                <button
-                  type="button"
-                  onClick={() => setIsEditing(false)}
-                  className="rounded-lg p-1.5 text-text-secondary hover:bg-background hover:text-text-primary"
-                >
-                  <LuX size={20} />
-                </button>
-              </div>
-
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-text-secondary mb-1">Full Name</label>
-                  <input
-                    type="text"
-                    value={formData.full_name}
-                    onChange={(e) => setFormData({ ...formData, full_name: e.target.value })}
-                    className="w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-text-secondary mb-1">Matric Number</label>
-                  <input
-                    type="text"
-                    value={formData.matric_number}
-                    onChange={(e) => setFormData({ ...formData, matric_number: e.target.value })}
-                    placeholder="e.g. CSC/2023/001"
-                    className="w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-text-secondary mb-1">Department</label>
-                  <input
-                    type="text"
-                    value={formData.department}
-                    onChange={(e) => setFormData({ ...formData, department: e.target.value })}
-                    placeholder="e.g. Computer Science"
-                    className="w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-text-secondary mb-1">Faculty</label>
-                  <input
-                    type="text"
-                    value={formData.faculty}
-                    onChange={(e) => setFormData({ ...formData, faculty: e.target.value })}
-                    placeholder="e.g. Science"
-                    className="w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wider text-text-secondary mb-1">Level</label>
-                    <input
-                      type="text"
-                      value={formData.level}
-                      onChange={(e) => setFormData({ ...formData, level: e.target.value })}
-                      placeholder="e.g. 300"
-                      className="w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-semibold uppercase tracking-wider text-text-secondary mb-1">Semester</label>
-                    <input
-                      type="text"
-                      value={formData.semester}
-                      onChange={(e) => setFormData({ ...formData, semester: e.target.value })}
-                      placeholder="e.g. First"
-                      className="w-full rounded-xl border border-border bg-background px-4 py-2.5 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-4 border-t border-border">
-                <button
-                  type="button"
-                  onClick={() => setIsEditing(false)}
-                  className="rounded-xl border border-border px-4 py-2.5 text-sm font-semibold text-text-secondary hover:bg-background transition"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 transition disabled:opacity-50"
-                >
-                  {saving ? <LuLoader className="animate-spin" size={16} /> : <LuSave size={16} />}
-                  {saving ? "Saving..." : "Save Changes"}
-                </button>
-              </div>
-            </form>
           ) : (
             /* DISPLAY PROFILE VIEW */
             <div className="max-w-2xl overflow-hidden rounded-2xl border border-border bg-surface p-6 shadow-sm sm:p-8">
